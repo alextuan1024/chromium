@@ -61,6 +61,10 @@ bool WindowFeatureController::IsTrustedSource() const {
 
 #if BUILDFLAG(IS_MAC)
 bool WindowFeatureController::UsesImmersiveFullscreenMode() const {
+  // Borderless browser fullscreen keeps the toolbar in the browser window.
+  if (browser_type_ == BrowserWindowInterface::TYPE_NORMAL) {
+    return false;
+  }
   const bool is_pwa = app_controller_ != nullptr;
   const bool is_tabbed_window =
       CanSupportWindowFeature(WindowFeature::kFeatureTabStrip);
@@ -71,7 +75,7 @@ bool WindowFeatureController::UsesImmersiveFullscreenTabbedMode() const {
   const bool is_pwa = app_controller_ != nullptr;
   const bool is_tabbed_window =
       CanSupportWindowFeature(WindowFeature::kFeatureTabStrip);
-  return is_tabbed_window && !is_pwa;
+  return UsesImmersiveFullscreenMode() && is_tabbed_window && !is_pwa;
 }
 #endif
 

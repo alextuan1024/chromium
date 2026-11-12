@@ -63,16 +63,14 @@ constexpr base::TimeDelta kTouchPopupTimeout = base::Seconds(10);
 // Time to wait before showing the popup when the escape key is held.
 constexpr base::TimeDelta kKeyPressPopupDelay = base::Seconds(1);
 
-bool IsExitUiEnabled() {
+bool IsExitUiEnabled(BrowserView* browser_view) {
 #if BUILDFLAG(IS_MAC)
-  // Exit UI is unnecessary, since Mac uses the OS fullscreen such that window
-  // menu and controls reveal when the cursor is moved to the top.
-  return false;
-#else
-  // Kiosk mode is a fullscreen experience, which makes the exit UI
-  // inappropriate.
-  return !IsRunningInAppMode();
+  // Borderless browser fullscreen has no native fullscreen window controls.
+  if (!browser_view->GetIsNormalType()) {
+    return false;
+  }
 #endif
+  return !IsRunningInAppMode();
 }
 
 }  // namespace
@@ -161,7 +159,7 @@ void FullscreenControlHost::OnKeyEvent(const ui::KeyEvent& event) {
 }
 
 void FullscreenControlHost::OnMouseEvent(const ui::MouseEvent& event) {
-  if (!IsExitUiEnabled()) {
+  if (!IsExitUiEnabled(browser_view_)) {
     return;
   }
 
@@ -226,7 +224,7 @@ void FullscreenControlHost::OnTouchEvent(const ui::TouchEvent& event) {
 }
 
 void FullscreenControlHost::OnGestureEvent(const ui::GestureEvent& event) {
-  if (!IsExitUiEnabled()) {
+  if (!IsExitUiEnabled(browser_view_)) {
     return;
   }
 
@@ -343,9 +341,14 @@ void FullscreenControlHost::OnPopupTimeout(
 }
 
 bool FullscreenControlHost::IsExitUiNeeded() {
+  bool needs_exit_control =
+      fullscreen_controller_->ShouldHideUIForFullscreen();
+#if BUILDFLAG(IS_MAC)
+  needs_exit_control |= browser_view_->GetIsNormalType();
+#endif
   return browser_view_->IsFullscreen() &&
          exclusive_access_context_->CanUserExitFullscreen() &&
-         fullscreen_controller_->ShouldHideUIForFullscreen();
+         needs_exit_control;
 }
 
 bool FullscreenControlHost::IsPointerLocked() {

@@ -24,6 +24,8 @@ component("app_shim") {
     "appkit_titlebar_private.h",
     "application_bridge.h",
     "application_bridge.mm",
+    "borderless_fullscreen_controller.h",
+    "borderless_fullscreen_controller.mm",
     "bridged_content_view.h",
     "bridged_content_view.mm",
     "bridged_content_view_touch_bar.mm",
@@ -124,6 +126,7 @@ component("features") {
 source_set("unit_tests") {
   testonly = true
   sources = [
+    "borderless_fullscreen_controller_unittest.mm",
     "browser_native_widget_window_mac_unittests.mm",
     "immersive_mode_transparent_titlebar_controller_cocoa_unittest.mm",
     "native_widget_mac_nswindow_headless_unittests.mm",
