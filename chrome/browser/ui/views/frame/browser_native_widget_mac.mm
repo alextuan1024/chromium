@@ -57,6 +57,7 @@
 #include "components/lens/lens_features.h"
 #include "components/omnibox/browser/omnibox_prefs.h"
 #import "components/omnibox/common/omnibox_feature_configs.h"
+#import "components/remote_cocoa/app_shim/browser_native_widget_window_mac.h"
 #import "components/remote_cocoa/app_shim/native_widget_mac_nswindow.h"
 #import "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #import "components/remote_cocoa/app_shim/window_touch_bar_delegate.h"
@@ -768,6 +769,10 @@ NativeWidgetMacNSWindow* BrowserNativeWidgetMac::CreateNSWindow(
     const remote_cocoa::mojom::CreateWindowParams* params) {
   CHECK(browser_view_);
   NativeWidgetMacNSWindow* ns_window = NativeWidgetMac::CreateNSWindow(params);
+  if (browser_view_->GetIsNormalType()) {
+    base::apple::ObjCCastStrict<BrowserNativeWidgetWindow>(ns_window)
+        .usesBorderlessFullscreen = YES;
+  }
   touch_bar_delegate_ = [[BrowserWindowTouchBarViewsDelegate alloc]
       initWithBrowser:browser_view_->browser()
                window:ns_window];
