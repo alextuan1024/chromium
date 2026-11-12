@@ -108,6 +108,14 @@ remote_cocoa::NativeWidgetNSWindowBridge* FindBridgeForSender(
 - (void)commandDispatch:(id)sender window:(NSWindow*)window {
   CHECK(sender, base::NotFatalUntil::M162);
   int command = [sender tag];
+  // Menu selection is immediate; holding Control enables the preview switcher.
+  if (!(NSApp.currentEvent.modifierFlags & NSEventModifierFlagControl)) {
+    if (command == IDC_CYCLE_TO_NEXT_TAB) {
+      command = IDC_SELECT_NEXT_TAB;
+    } else if (command == IDC_CYCLE_TO_PREV_TAB) {
+      command = IDC_SELECT_PREVIOUS_TAB;
+    }
+  }
   bool was_executed = false;
   FindBridgeForSender(sender, window)
       ->host()

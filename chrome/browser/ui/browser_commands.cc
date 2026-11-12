@@ -26,9 +26,11 @@
 #include "base/metrics/histogram_macros.h"
 #include "base/metrics/user_metrics.h"
 #include "base/no_destructor.h"
+#include "base/scoped_observation.h"
 #include "base/strings/escape.h"
 #include "base/strings/utf_string_conversions.h"
 #include "base/time/time.h"
+#include "base/timer/timer.h"
 #include "base/trace_event/trace_event.h"
 #include "build/build_config.h"
 #include "chrome/app/chrome_command_ids.h"
@@ -128,6 +130,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_model_selection_state.h"
 #include "chrome/browser/ui/tabs/tab_strip_user_gesture_details.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
+#include "chrome/browser/ui/thumbnails/thumbnail_tab_helper.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/user_education/browser_user_education_interface.h"
 #include "chrome/browser/ui/views/frame/browser_view.h"
@@ -223,9 +226,17 @@
 #include "ui/base/page_transition_types.h"
 #include "ui/events/event.h"
 #include "ui/events/keycodes/keyboard_codes.h"
+#include "ui/views/accessibility/view_accessibility.h"
+#include "ui/views/background.h"
+#include "ui/views/border.h"
+#include "ui/views/controls/image_view.h"
+#include "ui/views/controls/label.h"
 #include "ui/views/event_monitor.h"
 #include "ui/views/focus/focus_manager.h"
+#include "ui/views/layout/box_layout.h"
 #include "ui/views/views_features.h"
+#include "ui/views/widget/widget.h"
+#include "ui/views/widget/widget_observer.h"
 #include "url/gurl.h"
 #include "url/url_constants.h"
 
@@ -590,59 +601,6 @@ std::vector<tabs::TabHandle> GetGlobalMruTabs(BrowserCollection* collection) {
   return tabs;
 }
 
-class MruTabCycle : public ui::EventObserver {
- public:
-  MruTabCycle() = default;
-
-  std::optional<tabs::TabHandle> Advance(BrowserCollection* collection,
-                                         tabs::TabHandle active_tab,
-                                         bool reverse) {
-    std::vector<tabs::TabHandle> live_tabs = GetGlobalMruTabs(collection);
-    auto active = std::find(live_tabs.begin(), live_tabs.end(), active_tab);
-    if (live_tabs.size() < 2 || active == live_tabs.end()) {
-      ring_.clear();
-      return std::nullopt;
-    }
-
-    // ponytail: O(n^2) set validation; use a hash set if profiles with
-    // thousands of tabs make shortcut handling measurably slow.
-    if (ring_.size() != live_tabs.size() ||
-        !std::is_permutation(ring_.begin(), ring_.end(), live_tabs.begin()) ||
-        ring_[cursor_] != active_tab) {
-      ring_ = std::move(live_tabs);
-      cursor_ = std::distance(
-          ring_.begin(), std::find(ring_.begin(), ring_.end(), active_tab));
-    }
-    if (!event_monitor_) {
-      event_monitor_ = views::EventMonitor::CreateApplicationMonitor(
-          this, gfx::NativeWindow(),
-          {ui::EventType::kKeyPressed, ui::EventType::kKeyReleased});
-    }
-
-    cursor_ = reverse ? (cursor_ + ring_.size() - 1) % ring_.size()
-                      : (cursor_ + 1) % ring_.size();
-    return ring_[cursor_];
-  }
-
-  void OnEvent(const ui::Event& event) override {
-    if (event.AsKeyEvent()->key_code() == ui::VKEY_CONTROL) {
-      ring_.clear();
-      cursor_ = 0;
-      event_monitor_.reset();
-    }
-  }
-
- private:
-  std::vector<tabs::TabHandle> ring_;
-  size_t cursor_ = 0;
-  std::unique_ptr<views::EventMonitor> event_monitor_;
-};
-
-MruTabCycle& GetMruTabCycle() {
-  static base::NoDestructor<MruTabCycle> cycle;
-  return *cycle;
-}
-
 void ActivateTab(tabs::TabInterface* tab,
                  TabStripUserGestureDetails gesture_detail) {
   TabStripModel* model = tab->GetBrowserWindowInterface()->GetTabStripModel();
@@ -655,6 +613,223 @@ void ActivateTab(tabs::TabInterface* tab,
     model->ChangeTabGroupVisuals(group_id.value(), std::move(new_visual_data));
   }
   model->ActivateTab(tab, gesture_detail);
+}
+
+class MruTabCycle : public ui::EventObserver, public views::WidgetObserver {
+ public:
+  MruTabCycle() = default;
+
+  void Advance(BrowserWindowInterface* browser,
+               bool reverse,
+               TabStripUserGestureDetails gesture_detail) {
+    auto* active_tab = browser->GetTabStripModel()->GetActiveTab();
+    if (!active_tab) {
+      Finish(false);
+      return;
+    }
+    auto live_tabs = GetGlobalMruTabs(
+        ProfileBrowserCollection::GetForProfile(browser->GetProfile()));
+    if (live_tabs.size() < 2) {
+      Finish(false);
+      return;
+    }
+
+    if (ring_.empty() || origin_tab_ != active_tab->GetHandle()) {
+      Finish(false);
+      ring_ = std::move(live_tabs);
+      origin_tab_ = active_tab->GetHandle();
+      auto active = std::find(ring_.begin(), ring_.end(), origin_tab_);
+      if (active == ring_.end()) {
+        Finish(false);
+        return;
+      }
+      cursor_ = std::distance(ring_.begin(), active);
+      auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser);
+      if (!browser_view) {
+        Finish(false);
+        return;
+      }
+      source_widget_.Observe(browser_view->GetWidget());
+      event_monitor_ = views::EventMonitor::CreateApplicationMonitor(
+          this, gfx::NativeWindow(),
+          {ui::EventType::kKeyPressed, ui::EventType::kKeyReleased,
+           ui::EventType::kMousePressed});
+      // Quick taps switch without flashing the preview overlay.
+      show_timer_.Start(FROM_HERE, base::Milliseconds(150), this,
+                        &MruTabCycle::ShowPreview);
+    }
+
+    gesture_detail_ = gesture_detail;
+    // Keep the order fixed while Control is held, skipping tabs closed
+    // meanwhile.
+    do {
+      cursor_ = reverse ? (cursor_ + ring_.size() - 1) % ring_.size()
+                        : (cursor_ + 1) % ring_.size();
+    } while (!ring_[cursor_].Get());
+    if (preview_) {
+      ShowPreview();
+    }
+  }
+
+  void OnEvent(const ui::Event& event) override {
+    if (event.IsMouseEvent()) {
+      Finish(false);
+      return;
+    }
+    const auto& key = *event.AsKeyEvent();
+    // Modifier flags also cover synthesized events with no Control key code.
+    if (key.key_code() == ui::VKEY_ESCAPE) {
+      Finish(false);
+    } else if (!key.IsControlDown()) {
+      Finish(true);
+    } else if (event.type() == ui::EventType::kKeyPressed &&
+               key.key_code() != ui::VKEY_TAB &&
+               key.key_code() != ui::VKEY_SHIFT &&
+               key.key_code() != ui::VKEY_CONTROL) {
+      Finish(false);
+    }
+  }
+
+  void OnWidgetActivationChanged(views::Widget* widget, bool active) override {
+    if (!active) {
+      Finish(false);
+    }
+  }
+
+  void OnWidgetDestroying(views::Widget* widget) override { Finish(false); }
+
+ private:
+  void Finish(bool commit) {
+    tabs::TabHandle selected =
+        ring_.empty() ? tabs::TabHandle() : ring_[cursor_];
+    show_timer_.Stop();
+    event_monitor_.reset();
+    source_widget_.Reset();
+    subscriptions_.clear();
+    preview_.reset();
+    ring_.clear();
+    cursor_ = 0;
+    if (auto* tab = commit ? selected.Get() : nullptr) {
+      auto* browser = tab->GetBrowserWindowInterface();
+      if (browser) {
+        browser->GetWindow()->Activate();
+        ActivateTab(tab, gesture_detail_);
+      }
+    }
+  }
+
+  void ShowPreview() {
+    if (!source_widget_.IsObserving() || ring_.empty()) {
+      return;
+    }
+    const gfx::Rect window_bounds =
+        source_widget_.GetSource()->GetClientAreaBoundsInScreen();
+    const size_t count =
+        std::min(ring_.size(), static_cast<size_t>(std::clamp(
+                                   (window_bounds.width() - 32) / 200, 1, 5)));
+    const size_t first = std::min(cursor_ > count / 2 ? cursor_ - count / 2 : 0,
+                                  ring_.size() - count);
+    subscriptions_.clear();
+    auto contents = std::make_unique<views::View>();
+    contents->SetBackground(
+        views::CreateRoundedRectBackground(ui::kColorBubbleBackground, 16));
+    contents->SetLayoutManager(std::make_unique<views::BoxLayout>(
+        views::BoxLayout::Orientation::kHorizontal, gfx::Insets(16), 12));
+    contents->GetViewAccessibility().SetRole(ax::mojom::Role::kListBox);
+    // shortcut: prototype labels are English-only; localize before shipping.
+    contents->GetViewAccessibility().SetName(u"Recent tabs");
+    for (size_t i = first; i < first + count; ++i) {
+      auto* tab = ring_[i].Get();
+      auto* card = contents->AddChildView(std::make_unique<views::View>());
+      card->SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kVertical, gfx::Insets(8), 8));
+      card->SetBorder(views::CreateRoundedRectBorder(
+          2, 10,
+          i == cursor_ ? ui::kColorFocusableBorderFocused
+                       : ui::kColorBubbleBorder));
+      std::u16string title =
+          tab ? tab->GetContents()->GetTitle() : u"Closed tab";
+      if (title.empty() && tab) {
+        title = base::UTF8ToUTF16(tab->GetContents()->GetVisibleURL().spec());
+      }
+      card->GetViewAccessibility().SetRole(ax::mojom::Role::kListBoxOption);
+      card->GetViewAccessibility().SetName(title);
+      card->GetViewAccessibility().SetIsSelected(i == cursor_);
+      auto* image = card->AddChildView(std::make_unique<views::ImageView>());
+      image->SetImageSize(gfx::Size(32, 32));
+      image->SetPreferredSize(gfx::Size(160, 100));
+      image->SetCornerRadius(6);
+      image->SetBackground(views::CreateRoundedRectBackground(
+          ui::kColorSubtleEmphasisBackground, 6));
+      auto favicon = favicon::GetDefaultFaviconModel();
+      if (tab) {
+        auto* driver =
+            favicon::ContentFaviconDriver::FromWebContents(tab->GetContents());
+        if (driver && !driver->GetFavicon().IsEmpty()) {
+          favicon = ui::ImageModel::FromImage(driver->GetFavicon());
+        }
+      }
+      // A favicon remains visible when no cached page thumbnail is available.
+      image->SetImage(favicon);
+      auto* caption = card->AddChildView(std::make_unique<views::View>());
+      caption->SetLayoutManager(std::make_unique<views::BoxLayout>(
+          views::BoxLayout::Orientation::kHorizontal, gfx::Insets(), 6));
+      auto* icon =
+          caption->AddChildView(std::make_unique<views::ImageView>(favicon));
+      icon->SetImageSize(gfx::Size(16, 16));
+      auto* label =
+          caption->AddChildView(std::make_unique<views::Label>(title));
+      label->SetPreferredSize(gfx::Size(138, 20));
+      if (auto* helper = tab ? ThumbnailTabHelper::From(tab) : nullptr) {
+        auto thumbnail = helper->thumbnail();
+        auto subscription = thumbnail->Subscribe();
+        subscription->SetSizeHint(gfx::Size(160, 100));
+        subscription->SetUncompressedImageCallback(base::BindRepeating(
+            [](views::ImageView* image, gfx::ImageSkia bitmap) {
+              image->SetImageSize(gfx::Size(160, 100));
+              image->SetImage(ui::ImageModel::FromImageSkia(bitmap));
+            },
+            base::Unretained(image)));
+        subscriptions_.push_back(std::move(subscription));
+        thumbnail->RequestThumbnailImage();
+      }
+    }
+    const gfx::Size size = contents->GetPreferredSize({});
+    gfx::Rect bounds = window_bounds;
+    bounds.ClampToCenteredSize(size);
+    if (!preview_) {
+      preview_ = std::make_unique<views::Widget>();
+      views::Widget::InitParams params(
+          views::Widget::InitParams::CLIENT_OWNS_WIDGET,
+          views::Widget::InitParams::TYPE_POPUP);
+      params.parent = source_widget_.GetSource()->GetNativeView();
+      params.activatable = views::Widget::InitParams::Activatable::kNo;
+      params.opacity = views::Widget::InitParams::WindowOpacity::kTranslucent;
+      params.name = "TabCyclePreview";
+      params.bounds = bounds;
+      preview_->Init(std::move(params));
+    }
+    preview_->SetContentsView(std::move(contents));
+    preview_->SetBounds(bounds);
+    preview_->ShowInactive();
+  }
+
+  std::vector<tabs::TabHandle> ring_;
+  tabs::TabHandle origin_tab_;
+  size_t cursor_ = 0;
+  TabStripUserGestureDetails gesture_detail_{
+      TabStripUserGestureDetails::GestureType::kKeyboard};
+  std::unique_ptr<views::EventMonitor> event_monitor_;
+  base::ScopedObservation<views::Widget, views::WidgetObserver> source_widget_{
+      this};
+  base::OneShotTimer show_timer_;
+  std::unique_ptr<views::Widget> preview_;
+  std::vector<std::unique_ptr<ThumbnailImage::Subscription>> subscriptions_;
+};
+
+MruTabCycle& GetMruTabCycle() {
+  static base::NoDestructor<MruTabCycle> cycle;
+  return *cycle;
 }
 
 bool IsTabSelectable(
@@ -1647,22 +1822,7 @@ bool IsCtrlTabMruEnabled(BrowserWindowInterface* browser) {
 void CycleToMruTab(BrowserWindowInterface* browser,
                    bool reverse,
                    TabStripUserGestureDetails gesture_detail) {
-  tabs::TabInterface* active_tab = browser->GetTabStripModel()->GetActiveTab();
-  if (!active_tab) {
-    return;
-  }
-  auto target_handle = GetMruTabCycle().Advance(
-      ProfileBrowserCollection::GetForProfile(browser->GetProfile()),
-      active_tab->GetHandle(), reverse);
-  tabs::TabInterface* target = target_handle ? target_handle->Get() : nullptr;
-  BrowserWindowInterface* target_browser =
-      target ? target->GetBrowserWindowInterface() : nullptr;
-  if (target_browser) {
-    if (target_browser != browser) {
-      target_browser->GetWindow()->Activate();
-    }
-    ActivateTab(target, gesture_detail);
-  }
+  GetMruTabCycle().Advance(browser, reverse, gesture_detail);
 }
 
 void MoveTabNext(BrowserWindowInterface* browser) {
