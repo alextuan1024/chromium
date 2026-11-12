@@ -53,6 +53,7 @@
 #include "chrome/grit/generated_resources.h"
 #include "chrome/test/base/in_process_browser_test.h"
 #include "chrome/test/base/ui_test_utils.h"
+#include "components/prefs/pref_service.h"
 #include "components/tab_groups/tab_group_id.h"
 #include "components/tabs/public/tab_group.h"
 #include "content/public/browser/web_contents.h"
@@ -1846,3 +1847,22 @@ IN_PROC_BROWSER_TEST_F(VerticalTabStripFocusSwipeTest,
   EXPECT_EQ(group2, tab_strip_model()->GetFocusedGroup());
 }
 #endif  // BUILDFLAG(IS_WIN) || BUILDFLAG(IS_LINUX) || BUILDFLAG(IS_CHROMEOS)
+
+#if BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_F(VerticalTabStripRegionViewTest,
+                       FullscreenWithHiddenToolbarKeepsVerticalTabs) {
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kShowFullscreenToolbar,
+                                               false);
+  auto* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
+  ui_test_utils::ToggleFullscreenModeAndWait(browser());
+  ASSERT_TRUE(browser_view->ShouldDrawVerticalTabStrip());
+  ASSERT_TRUE(region_view()->GetVisible());
+
+  const bool was_collapsed = state_controller()->IsCollapsed();
+  chrome::ExecuteCommand(browser(), IDC_TOGGLE_VERTICAL_TABS_COLLAPSE);
+  EXPECT_NE(was_collapsed, state_controller()->IsCollapsed());
+  EXPECT_TRUE(browser_view->ShouldDrawVerticalTabStrip());
+  EXPECT_TRUE(region_view()->GetVisible());
+  ui_test_utils::ToggleFullscreenModeAndWait(browser());
+}
+#endif

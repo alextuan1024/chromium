@@ -9,6 +9,8 @@
 
 REMOTE_COCOA_APP_SHIM_EXPORT
 @interface BrowserNativeWidgetWindow : NativeWidgetMacNSWindow
+// Use the whole display on the current desktop, including the camera strip.
+@property(nonatomic) BOOL usesBorderlessFullscreen;
 // When set to `YES`, the traffic lights will always be shown. When set to `NO`,
 // the traffic lights follow the default AppKit behavior.
 - (void)setAlwaysShowTrafficLights:(BOOL)alwaysShow;
