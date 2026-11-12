@@ -7,6 +7,7 @@
 #import <AppKit/AppKit.h>
 
 #include "base/mac/mac_util.h"
+#import "components/remote_cocoa/app_shim/borderless_fullscreen_controller.h"
 #include "components/remote_cocoa/app_shim/native_widget_ns_window_bridge.h"
 #include "components/remote_cocoa/common/native_widget_ns_window_host.mojom.h"
 
@@ -144,16 +145,23 @@ WEAK_IMPORT_ATTRIBUTE
 
 @end
 
-@implementation BrowserNativeWidgetWindow
+@implementation BrowserNativeWidgetWindow {
+  BorderlessFullscreenController* _borderlessFullscreenController;
+}
 
 @synthesize thinTitlebarViewController = _thinTitlebarViewController;
+@synthesize usesBorderlessFullscreen = _usesBorderlessFullscreen;
 
 // NSWindow (PrivateAPI) overrides.
 
 + (Class)frameViewClassForStyleMask:(NSUInteger)windowStyle {
+  if (!(windowStyle & NSWindowStyleMaskTitled)) {
+    return [super frameViewClassForStyleMask:windowStyle];
+  }
   // - NSThemeFrame and its subclasses will be nil if it's missing at runtime.
-  if ([BrowserWindowFrame class])
+  if ([BrowserWindowFrame class]) {
     return [BrowserWindowFrame class];
+  }
   return [super frameViewClassForStyleMask:windowStyle];
 }
 
@@ -211,13 +219,42 @@ WEAK_IMPORT_ATTRIBUTE
 // tends to just be nil.
 - (void)_handleFocusToolbarHotKey:(id)unknown {
   remote_cocoa::NativeWidgetNSWindowBridge* bridge = [self bridge];
-  if (bridge)
+  if (bridge) {
     bridge->host()->OnFocusWindowToolbar();
+  }
 }
 
 - (void)setAlwaysShowTrafficLights:(BOOL)alwaysShow {
-  [base::apple::ObjCCastStrict<BrowserWindowFrame>(self.contentView.superview)
+  [base::apple::ObjCCast<BrowserWindowFrame>(self.contentView.superview)
       setAlwaysShowTrafficLights:alwaysShow];
+}
+
+- (void)toggleFullScreen:(id)sender {
+  if (!self.usesBorderlessFullscreen || !self.bridge) {
+    [super toggleFullScreen:sender];
+    return;
+  }
+  if (!_borderlessFullscreenController) {
+    _borderlessFullscreenController =
+        [[BorderlessFullscreenController alloc] initWithWindow:self];
+  }
+  if (_borderlessFullscreenController.active) {
+    self.bridge->fullscreen_controller().OnWindowWillExitFullscreen();
+    [_borderlessFullscreenController exit];
+    if (self.bridge) {
+      self.bridge->fullscreen_controller().OnWindowDidExitFullscreen();
+    }
+  } else {
+    self.bridge->fullscreen_controller().OnWindowWillEnterFullscreen();
+    [_borderlessFullscreenController enter];
+    if (self.bridge) {
+      if (_borderlessFullscreenController.active) {
+        self.bridge->fullscreen_controller().OnWindowDidEnterFullscreen();
+      } else {
+        self.bridge->fullscreen_controller().OnWindowDidFailToEnterFullscreen();
+      }
+    }
+  }
 }
 
 @end
