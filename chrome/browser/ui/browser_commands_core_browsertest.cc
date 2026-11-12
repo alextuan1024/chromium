@@ -19,6 +19,7 @@
 #include "chrome/browser/tab_group_sync/tab_group_sync_service_factory.h"
 #include "chrome/browser/ui/browser_command_controller.h"
 #include "chrome/browser/ui/browser_commands.h"
+#include "chrome/browser/ui/browser_window.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_interface.h"
 #include "chrome/browser/ui/browser_window/public/global_browser_collection.h"
 #include "chrome/browser/ui/tabs/saved_tab_groups/tab_group_sync_service_initialized_observer.h"
@@ -29,6 +30,7 @@
 #include "chrome/common/pref_names.h"
 #include "chrome/common/url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
+#include "chrome/test/base/interactive_test_utils.h"
 #include "chrome/test/base/ui_test_utils.h"
 #include "components/bookmarks/browser/bookmark_model.h"
 #include "components/bookmarks/test/bookmark_test_helpers.h"
@@ -161,59 +163,76 @@ IN_PROC_BROWSER_TEST_F(BrowserCommandsCoreTest, CycleToMruTab) {
 
   CommandUpdater* updater = chrome::BrowserCommandController::From(browser());
 
-  // Cycle through every tab in MRU order, then wrap around.
-  updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
-  EXPECT_EQ(0, browser()->GetTabStripModel()->active_index());
-  updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
-  EXPECT_EQ(1, browser()->GetTabStripModel()->active_index());
+  // Highlighting previews must not activate or reorder the underlying tabs.
   updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
   EXPECT_EQ(2, browser()->GetTabStripModel()->active_index());
-
-  // Reverse direction traverses the same ring backwards.
+  updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
+  EXPECT_EQ(2, browser()->GetTabStripModel()->active_index());
+  updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
+  EXPECT_EQ(2, browser()->GetTabStripModel()->active_index());
   updater->ExecuteCommand(IDC_CYCLE_TO_PREV_TAB);
+  EXPECT_EQ(2, browser()->GetTabStripModel()->active_index());
+
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_CONTROL,
+                                              false, false, false, false));
   EXPECT_EQ(1, browser()->GetTabStripModel()->active_index());
+
+  // Escape cancels; releasing Control afterward must not activate a preview.
+  updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_ESCAPE, false,
+                                              false, false, false));
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_CONTROL,
+                                              false, false, false, false));
+  EXPECT_EQ(1, browser()->GetTabStripModel()->active_index());
+
+  // Recover when an input source clears Control without a Control-key event.
+  updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_A, false,
+                                              false, false, false));
+  EXPECT_EQ(2, browser()->GetTabStripModel()->active_index());
 }
 
-// Tests that Ctrl+Tab MRU cycling stays within the currently focused browser
-// window even when another window has a more recently focused tab.
 IN_PROC_BROWSER_TEST_F(BrowserCommandsCoreTest,
-                       CycleToMruTabStaysInCurrentWindow) {
+                       CycleToMruTabCommitsAcrossWindows) {
   browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kCtrlTabMru, true);
-
   auto* lifecycle_source = resource_coordinator::GetTabLifecycleUnitSource();
-  GURL about_blank(url::kAboutBlankURL);
-
-  base::ScopedClosureRunner scoped_focus =
-      lifecycle_source->SetFocusedTabStripModelForTesting(
-          browser()->GetTabStripModel());
-  AddTab(browser(), about_blank);
-  AddTab(browser(), about_blank);
-  browser()->GetTabStripModel()->ActivateTabAt(0);
-  browser()->GetTabStripModel()->ActivateTabAt(1);
+  auto scoped_focus = lifecycle_source->SetFocusedTabStripModelForTesting(
+      browser()->GetTabStripModel());
+  AddTab(browser(), GURL(url::kAboutBlankURL));
+  AddTab(browser(), GURL(url::kAboutBlankURL));
   scoped_focus.RunAndReset();
 
-  // Focus a second browser window and a standalone app window so their tabs
-  // have more recent last-focused timestamps than tab 0 in browser().
-  BrowserWindowInterface* second_browser =
-      CreateBrowser(browser()->GetProfile());
+  auto* second_browser = CreateBrowser(browser()->GetProfile());
   scoped_focus = lifecycle_source->SetFocusedTabStripModelForTesting(
       second_browser->GetTabStripModel());
   scoped_focus.RunAndReset();
-
-  BrowserWindowInterface* app_browser =
-      CreateBrowserForApp("test_app", browser()->GetProfile());
-  scoped_focus = lifecycle_source->SetFocusedTabStripModelForTesting(
-      app_browser->GetTabStripModel());
-  scoped_focus.RunAndReset();
-
   scoped_focus = lifecycle_source->SetFocusedTabStripModelForTesting(
       browser()->GetTabStripModel());
+  browser()->GetWindow()->Activate();
 
-  CommandUpdater* updater = chrome::BrowserCommandController::From(browser());
-  updater->ExecuteCommand(IDC_CYCLE_TO_NEXT_TAB);
+  chrome::CycleToMruTab(browser(), false);
+  EXPECT_EQ(1, browser()->GetTabStripModel()->active_index());
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_CONTROL,
+                                              false, false, false, false));
+  EXPECT_TRUE(second_browser->GetWindow()->IsActive());
+}
 
-  // Cycling MRU should stay in browser() and switch back to tab 0.
-  EXPECT_EQ(0, browser()->GetTabStripModel()->active_index());
+IN_PROC_BROWSER_TEST_F(BrowserCommandsCoreTest,
+                       CycleToMruTabHandlesClosedPreview) {
+  browser()->GetProfile()->GetPrefs()->SetBoolean(prefs::kCtrlTabMru, true);
+  auto scoped_focus =
+      resource_coordinator::GetTabLifecycleUnitSource()
+          ->SetFocusedTabStripModelForTesting(browser()->GetTabStripModel());
+  AddTab(browser(), GURL(url::kAboutBlankURL));
+  AddTab(browser(), GURL(url::kAboutBlankURL));
+  chrome::CycleToMruTab(browser(), false);
+  auto* active_contents = browser()->GetTabStripModel()->GetActiveWebContents();
+  browser()->GetTabStripModel()->CloseWebContentsAt(0,
+                                                    TabCloseTypes::CLOSE_NONE);
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_CONTROL,
+                                              false, false, false, false));
+  EXPECT_EQ(active_contents,
+            browser()->GetTabStripModel()->GetActiveWebContents());
 }
 
 // Tests that IDC_SELECT_NEXT_TAB and IDC_SELECT_PREVIOUS_TAB perform
