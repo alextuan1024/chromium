@@ -214,11 +214,6 @@ IN_PROC_BROWSER_TEST_F(FullscreenControlViewTest,
   ASSERT_FALSE(IsPopupCreated());
 }
 
-// These four tests which cover the mouse/touch fullscreen UI are covering
-// behavior that doesn't exist on Mac - Mac has its own native fullscreen exit
-// UI. See IsExitUiEnabled() in FullscreenControlHost.
-#if !BUILDFLAG(IS_MAC)
-
 IN_PROC_BROWSER_TEST_F(FullscreenControlViewTest, MouseExitFullscreen) {
   EnterActiveTabFullscreenAndFinishPromptAnimation();
   BrowserView* browser_view = BrowserView::GetBrowserViewForBrowser(browser());
@@ -246,6 +241,8 @@ IN_PROC_BROWSER_TEST_F(FullscreenControlViewTest, MouseExitFullscreen) {
   ASSERT_FALSE(IsInFullScreen());
   ASSERT_FALSE(browser_view->IsFullscreen());
 }
+
+#if !BUILDFLAG(IS_MAC)
 
 // TODO(https://crbug.com/374539762): Deflake and re-enable on Windows.
 // TODO(crbug.com/524685085): Flaky on Linux and ASAN.

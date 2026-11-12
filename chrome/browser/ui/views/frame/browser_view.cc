@@ -1483,6 +1483,17 @@ bool BrowserView::ShouldDrawTabStrokes() const {
 }
 
 bool BrowserView::ShouldDrawTabStrip() const {
+#if BUILDFLAG(IS_MAC)
+  const auto* vertical_tabs =
+      tabs::VerticalTabStripStateController::From(browser_);
+  // Hiding the top toolbar must not hide the independent vertical sidebar.
+  if (GetIsNormalType() && IsFullscreen() && vertical_tabs &&
+      vertical_tabs->ShouldDisplayVerticalTabs() &&
+      !fullscreen_utils::IsInContentFullscreen(browser())) {
+    return vertical_tab_strip_region_view_ &&
+           vertical_tab_strip_region_view_->GetTabStripView();
+  }
+#endif
   // Return false if this window does not normally display a tabstrip or if the
   // tabstrip is currently hidden, e.g. because we're in fullscreen.
   if (!WindowFeatureController::From(browser_)->SupportsWindowFeature(
