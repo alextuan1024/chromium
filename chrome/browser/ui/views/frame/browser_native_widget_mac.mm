@@ -287,7 +287,8 @@ void BrowserNativeWidgetMac::GetWindowFrameTitlebarHeight(
         std::max(top_element_info.tabstrip_preferred_height,
                  top_element_info.toolbar_minimum_height) +
         browser_view_->browser_widget()->GetFrameView()->GetTopInset(true);
-    if (!browser_view_->ShouldDrawTabStrip()) {
+    if (!browser_view_->ShouldDrawTabStrip() &&
+        !browser_view_->IsAutoHideControlsEnabled()) {
       *titlebar_height += kWebAppMenuMargin * 2;
     }
   } else {

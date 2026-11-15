@@ -12,8 +12,11 @@
 #include "base/command_line.h"
 #include "base/feature_list.h"
 #include "base/memory/raw_ptr.h"
+#include "base/run_loop.h"
 #include "base/scoped_multi_source_observation.h"
 #include "base/strings/stringprintf.h"
+#include "base/task/single_thread_task_runner.h"
+#include "base/test/run_until.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
@@ -42,8 +45,12 @@
 #include "chrome/browser/ui/views/frame/vertical_tab_strip_region_view.h"
 #include "chrome/browser/ui/views/side_panel/side_panel.h"
 #include "chrome/browser/ui/views/tabs/common/tab_strip_collection_controller.h"
+#include "chrome/browser/ui/views/toolbar/app_menu_control.h"
+#include "chrome/browser/ui/views/frame/toolbar_button_provider.h"
 #include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/pref_names.h"
+#include "chrome/test/base/interactive_test_utils.h"
+#include "chrome/test/base/ui_test_utils.h"
 #include "chrome/test/interaction/interactive_browser_test.h"
 #include "components/bookmarks/common/bookmark_bar_visibility_state.h"
 #include "components/bookmarks/common/bookmark_pref_names.h"
@@ -51,6 +58,7 @@
 #include "components/search/ntp_features.h"
 #include "components/user_prefs/user_prefs.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "testing/gmock/include/gmock/gmock.h"
 #include "ui/base/interaction/element_identifier.h"
 #include "ui/base/interaction/element_specifier.h"
@@ -59,10 +67,13 @@
 #include "ui/base/pointer/touch_ui_controller.h"
 #include "ui/compositor/compositor.h"
 #include "ui/display/display_switches.h"
+#include "ui/events/event.h"
 #include "ui/gfx/animation/animation.h"
 #include "ui/gfx/geometry/rect.h"
 #include "ui/gfx/geometry/size.h"
+#include "ui/views/controls/menu/menu_runner.h"
 #include "ui/views/controls/webview/webview.h"
+#include "ui/views/focus/focus_manager.h"
 #include "ui/views/layout/fill_layout.h"
 #include "ui/views/view.h"
 #include "ui/views/view_class_properties.h"
@@ -609,18 +620,17 @@ IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
 IN_PROC_BROWSER_TEST_F(BrowserViewTabbedLayoutImplUiTest,
                        TestMinimumWindowSizeWhenSidePanelIsOpen) {
   gfx::Rect toolbar_bounds_in_screen;
-  RunTestSequence(SelectTab(kBrowserViewElementId, 0),
-                  ReplaceAndShowSidePanel(SidePanelType::kToolbar),
-                  ResizeToMinimumWidth(),
-                  WithView(ToolbarView::kToolbarElementId,
-                           [&](views::View* toolbar) {
-                             toolbar_bounds_in_screen =
-                                 toolbar->GetBoundsInScreen();
-                           }),
-                  CheckView(kSidePanelElementId, [&](views::View* side_panel) {
-                    return side_panel->GetBoundsInScreen().y() <
-                           toolbar_bounds_in_screen.bottom();
-                  }));
+  RunTestSequence(
+      SelectTab(kBrowserViewElementId, 0),
+      ReplaceAndShowSidePanel(SidePanelType::kToolbar), ResizeToMinimumWidth(),
+      WithView(ToolbarView::kToolbarElementId,
+               [&](views::View* toolbar) {
+                 toolbar_bounds_in_screen = toolbar->GetBoundsInScreen();
+               }),
+      CheckView(kSidePanelElementId, [&](views::View* side_panel) {
+        return side_panel->GetBoundsInScreen().y() <
+               toolbar_bounds_in_screen.bottom();
+      }));
 }
 
 // Regression tests for cases where preferred width for side panel is
@@ -1078,3 +1088,262 @@ IN_PROC_BROWSER_TEST_F(BrowserViewHorizontalTabStripOldLayoutUiTest,
         LOG(INFO) << "TopContainer top (px): " << top_container_top_px;
       }));
 }
+
+#if BUILDFLAG(IS_MAC)
+class AutoHideBrowserControlsUiTest : public BrowserViewTabbedLayoutImplUiTest {
+ public:
+  void SetUpOnMainThread() override {
+    BrowserViewTabbedLayoutImplUiTest::SetUpOnMainThread();
+    ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+    auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+    ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
+        view->GetBoundsInScreen().CenterPoint()));
+    browser()->tab_strip_model()->GetActiveWebContents()->Focus();
+    ASSERT_TRUE(
+        base::test::RunUntil([&] { return !view->IsToolbarVisible(); }));
+  }
+};
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       MenuKeepsToolbarRevealed) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  view->SetFocusToLocationBar(true);
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
+      view->GetBoundsInScreen().CenterPoint()));
+  browser()->tab_strip_model()->GetActiveWebContents()->Focus();
+  auto* menu = view->toolbar_button_provider()->GetAppMenuControl();
+  menu->ShowMenuWithFlags(views::MenuRunner::NO_FLAGS);
+  ASSERT_TRUE(menu->IsMenuShowing());
+  base::RunLoop pause;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, pause.QuitClosure(), base::Milliseconds(400));
+  pause.Run();
+  EXPECT_TRUE(view->IsToolbarVisible());
+  menu->CloseMenu();
+  browser()->tab_strip_model()->GetActiveWebContents()->Focus();
+  EXPECT_TRUE(view->IsToolbarVisible());
+  ASSERT_TRUE(base::test::RunUntil([&] { return !view->IsToolbarVisible(); }));
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       TopEdgeHoverAndDelayedDismissal) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
+  contents->Focus();
+  auto window_bounds = view->GetWidget()->GetWindowBoundsInScreen();
+  window_bounds.set_width(window_bounds.width() - 80);
+  view->GetWidget()->SetBounds(window_bounds);
+  RunScheduledLayouts();
+  const auto bounds = view->GetBoundsInScreen();
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(bounds.CenterPoint()));
+  ASSERT_FALSE(view->IsToolbarVisible());
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
+      gfx::Point(bounds.CenterPoint().x(), bounds.y() + 2)));
+  ASSERT_TRUE(base::test::RunUntil([&] { return view->IsToolbarVisible(); }));
+  RunScheduledLayouts();
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
+      view->toolbar()->GetBoundsInScreen().CenterPoint()));
+  base::RunLoop pause;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, pause.QuitClosure(), base::Milliseconds(350));
+  pause.Run();
+  EXPECT_TRUE(view->IsToolbarVisible());
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(bounds.CenterPoint()));
+  EXPECT_TRUE(view->IsToolbarVisible());
+  ASSERT_TRUE(base::test::RunUntil([&] { return !view->IsToolbarVisible(); }));
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       AddressFocusKeepsToolbarRevealed) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
+      view->GetBoundsInScreen().CenterPoint()));
+  view->SetFocusToLocationBar(true);
+  base::RunLoop pause;
+  base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
+      FROM_HERE, pause.QuitClosure(), base::Milliseconds(350));
+  pause.Run();
+  EXPECT_TRUE(view->IsToolbarVisible());
+  browser()->tab_strip_model()->GetActiveWebContents()->Focus();
+  EXPECT_TRUE(view->IsToolbarVisible());
+  ASSERT_TRUE(base::test::RunUntil([&] { return !view->IsToolbarVisible(); }));
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       RevealedToolbarOverlaysContentsAndSidebar) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  RunScheduledLayouts();
+  const auto contents_bounds = view->contents_container()->GetBoundsInScreen();
+  const auto sidebar_bounds =
+      view->vertical_tab_strip_region_view_for_testing()->GetBoundsInScreen();
+  view->SetFocusToLocationBar(true);
+  RunScheduledLayouts();
+  EXPECT_EQ(contents_bounds, view->contents_container()->GetBoundsInScreen());
+  EXPECT_EQ(
+      sidebar_bounds,
+      view->vertical_tab_strip_region_view_for_testing()->GetBoundsInScreen());
+  EXPECT_EQ(view->GetBoundsInScreen().x(),
+            view->top_container()->GetBoundsInScreen().x());
+  EXPECT_EQ(view->width(), view->top_container()->width());
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       NewTabDoesNotRevealToolbar) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  ASSERT_FALSE(view->IsToolbarVisible());
+  chrome::NewTab(browser(), NewTabTypes::kNewTabCommand);
+  RunScheduledLayouts();
+  EXPECT_FALSE(view->IsToolbarVisible());
+  view->SetFocusToLocationBar(false);
+  RunScheduledLayouts();
+  EXPECT_FALSE(view->IsToolbarVisible());
+  view->SetFocusToLocationBar(true);
+  RunScheduledLayouts();
+  EXPECT_TRUE(view->IsToolbarVisible());
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       ToggleToolbarWithoutChangingPageFocus) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  browser()->tab_strip_model()->GetActiveWebContents()->Focus();
+  RunScheduledLayouts();
+  auto* focus_manager = view->GetFocusManager();
+  auto* focused_view = focus_manager->GetFocusedView();
+  ASSERT_NE(focused_view, nullptr);
+  ASSERT_FALSE(view->IsToolbarVisible());
+  const ui::Accelerator toggle(ui::VKEY_K,
+                               ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN);
+  EXPECT_TRUE(focus_manager->ProcessAccelerator(toggle));
+  RunScheduledLayouts();
+  EXPECT_TRUE(view->IsToolbarVisible());
+  EXPECT_EQ(focus_manager->GetFocusedView(), focused_view);
+  EXPECT_TRUE(focus_manager->ProcessAccelerator(toggle));
+  RunScheduledLayouts();
+  EXPECT_FALSE(view->IsToolbarVisible());
+  EXPECT_EQ(focus_manager->GetFocusedView(), focused_view);
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       NewTabFocusesSearchboxAndSupportsAddressShortcut) {
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  chrome::NewTab(browser(), NewTabTypes::kNewTabCommand);
+  auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(content::WaitForLoadStop(contents));
+  EXPECT_FALSE(view->IsToolbarVisible());
+  EXPECT_EQ(true, content::EvalJs(contents, R"JS(
+    new Promise(resolve => {
+      const deadline = performance.now() + 10000;
+      function checkFocus() {
+        let focused = document.activeElement;
+        while (focused && focused.shadowRoot &&
+               focused.shadowRoot.activeElement) {
+          focused = focused.shadowRoot.activeElement;
+        }
+        if (focused instanceof HTMLInputElement ||
+            focused instanceof HTMLTextAreaElement) {
+          resolve(true);
+        } else if (performance.now() >= deadline) {
+          resolve(false);
+        } else {
+          requestAnimationFrame(checkFocus);
+        }
+      }
+      checkFocus();
+    })
+  )JS"));
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_L, false,
+                                              false, false, true));
+  RunScheduledLayouts();
+  EXPECT_TRUE(view->IsToolbarVisible());
+  EXPECT_TRUE(
+      view->toolbar()->Contains(view->GetFocusManager()->GetFocusedView()));
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_K, false,
+                                              true, false, true));
+  EXPECT_TRUE(view->IsToolbarVisible());
+  ASSERT_TRUE(ui_test_utils::SendKeyPressSync(browser(), ui::VKEY_K, false,
+                                              true, false, true));
+  RunScheduledLayouts();
+  EXPECT_FALSE(view->IsToolbarVisible());
+  EXPECT_FALSE(
+      view->toolbar()->Contains(view->GetFocusManager()->GetFocusedView()));
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       NewTabPreservesExplicitlyVisibleToolbar) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  EXPECT_TRUE(view->GetFocusManager()->ProcessAccelerator(
+      ui::Accelerator(ui::VKEY_K, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN)));
+  ASSERT_TRUE(view->IsToolbarVisible());
+  chrome::NewTab(browser(), NewTabTypes::kNewTabCommand);
+  RunScheduledLayouts();
+  EXPECT_TRUE(view->IsToolbarVisible());
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       FullscreenRestoresHiddenToolbarOnExit) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  ASSERT_TRUE(view->IsAutoHideControlsEnabled());
+  ASSERT_FALSE(view->IsToolbarVisible());
+  ui_test_utils::ToggleFullscreenModeAndWait(browser());
+  EXPECT_FALSE(view->IsAutoHideControlsEnabled());
+  ui_test_utils::ToggleFullscreenModeAndWait(browser());
+  RunScheduledLayouts();
+  EXPECT_TRUE(view->IsAutoHideControlsEnabled());
+  EXPECT_FALSE(view->IsToolbarVisible());
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       RevealAddressBarAndHideAgain) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  auto* controller = tabs::VerticalTabStripStateController::From(browser());
+  controller->SetVerticalTabsEnabled(true);
+  controller->SetExpandOnHoverEnabled(true);
+  controller->RequestCollapse(true);
+  browser()->tab_strip_model()->GetActiveWebContents()->Focus();
+  RunScheduledLayouts();
+  EXPECT_FALSE(view->IsToolbarVisible());
+  auto* region = view->vertical_tab_strip_region_view_for_testing();
+  EXPECT_EQ(region->width(), 4);
+  const int contents_x = view->contents_container()->x();
+  region->OnMouseEntered(
+      ui::MouseEvent(ui::EventType::kMouseEntered, gfx::PointF(2, 100),
+                     gfx::PointF(2, 100), base::TimeTicks::Now(), 0, 0));
+  RunScheduledLayouts();
+  EXPECT_GT(region->width(), 4);
+  EXPECT_EQ(view->contents_container()->x(), contents_x);
+  region->OnMouseExited(
+      ui::MouseEvent(ui::EventType::kMouseExited, gfx::PointF(500, 100),
+                     gfx::PointF(500, 100), base::TimeTicks::Now(), 0, 0));
+  RunScheduledLayouts();
+  EXPECT_EQ(region->width(), 4);
+
+  view->SetFocusToLocationBar(true);
+  RunScheduledLayouts();
+  EXPECT_TRUE(view->IsToolbarVisible());
+  EXPECT_GT(view->toolbar()->height(), 0);
+  EXPECT_EQ(view->toolbar()->GetMinimumSize().height(),
+            view->GetFrameElementInfo().toolbar_minimum_height);
+
+  EXPECT_TRUE(view->GetFocusManager()->ProcessAccelerator(
+      ui::Accelerator(ui::VKEY_K, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN)));
+  EXPECT_TRUE(view->IsToolbarVisible());
+  EXPECT_TRUE(view->GetFocusManager()->ProcessAccelerator(
+      ui::Accelerator(ui::VKEY_K, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN)));
+  RunScheduledLayouts();
+  EXPECT_FALSE(view->IsToolbarVisible());
+  EXPECT_FALSE(
+      view->toolbar()->Contains(view->GetFocusManager()->GetFocusedView()));
+
+  controller->SetVerticalTabsEnabled(false);
+  RunScheduledLayouts();
+  EXPECT_TRUE(view->IsToolbarVisible());
+  auto* new_browser = CreateBrowser(browser()->GetProfile());
+  auto* new_view = BrowserView::GetBrowserViewForBrowser(new_browser);
+  EXPECT_FALSE(new_view->IsAutoHideControlsEnabled());
+  EXPECT_TRUE(new_view->IsToolbarVisible());
+}
+#endif

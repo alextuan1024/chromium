@@ -5,6 +5,7 @@
 #include <optional>
 
 #include "base/test/metrics/user_action_tester.h"
+#include "build/build_config.h"
 #include "chrome/browser/ui/browser_window/public/browser_window_features.h"
 #include "chrome/browser/ui/browser_window/test/mock_browser_window_interface.h"
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
@@ -37,6 +38,8 @@ class VerticalTabStripStateControllerTest : public testing::Test {
   void SetUp() override {
     testing::Test::SetUp();
     tabs::RegisterProfilePrefs(pref_service_.registry());
+    pref_service_.SetBoolean(prefs::kVerticalTabsEnabled, false);
+    pref_service_.SetBoolean(prefs::kVerticalTabsCollapsedState, false);
     SessionID test_session_id = SessionID::FromSerializedValue(kSessionIDValue);
 
     EXPECT_CALL(mock_browser_window_interface_, GetUnownedUserDataHost)
@@ -74,6 +77,16 @@ class VerticalTabStripStateControllerTest : public testing::Test {
   BrowserWindowFeatures browser_window_features_;
   MockBrowserWindowInterface mock_browser_window_interface_;
 };
+
+TEST(VerticalTabStripDefaultsTest, PlatformDefaults) {
+  sync_preferences::TestingPrefServiceSyncable pref_service;
+  tabs::RegisterProfilePrefs(pref_service.registry());
+  EXPECT_EQ(BUILDFLAG(IS_MAC),
+            pref_service.GetBoolean(prefs::kVerticalTabsEnabled));
+  EXPECT_EQ(BUILDFLAG(IS_MAC),
+            pref_service.GetBoolean(prefs::kVerticalTabsCollapsedState));
+  EXPECT_TRUE(pref_service.GetBoolean(prefs::kVerticalTabsExpandOnHoverEnabled));
+}
 
 TEST_F(VerticalTabStripStateControllerTest, Initial) {
   EXPECT_FALSE(controller()->ShouldDisplayVerticalTabs());

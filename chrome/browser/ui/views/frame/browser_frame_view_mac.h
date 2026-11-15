@@ -66,6 +66,7 @@ class BrowserFrameViewMac : public BrowserFrameView,
       const gfx::Rect& client_bounds) const override;
   int NonClientHitTest(const gfx::Point& point) override;
   void UpdateMinimumSize() override;
+  void UpdateAutoHideControlsVisibility() override;
   void WindowControlsOverlayEnabledChanged() override;
 
   // views::View:
@@ -136,6 +137,7 @@ class BrowserFrameViewMac : public BrowserFrameView,
       current_toolbar_style_;
 
   bool is_glass_frame_eligible_ = false;
+  bool auto_hide_controls_active_ = false;
 
   base::CallbackListSubscription glass_frame_service_subscription_;
 };
