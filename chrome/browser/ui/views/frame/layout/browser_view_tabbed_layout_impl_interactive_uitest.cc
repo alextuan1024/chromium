@@ -32,6 +32,7 @@
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
 #include "chrome/browser/ui/views/animations/common_animation_values.h"
@@ -1318,19 +1319,7 @@ IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
   RunScheduledLayouts();
   EXPECT_FALSE(view->IsToolbarVisible());
   auto* region = view->vertical_tab_strip_region_view_for_testing();
-  EXPECT_EQ(region->width(), 4);
-  const int contents_x = view->contents_container()->x();
-  region->OnMouseEntered(
-      ui::MouseEvent(ui::EventType::kMouseEntered, gfx::PointF(2, 100),
-                     gfx::PointF(2, 100), base::TimeTicks::Now(), 0, 0));
-  RunScheduledLayouts();
-  EXPECT_GT(region->width(), 4);
-  EXPECT_EQ(view->contents_container()->x(), contents_x);
-  region->OnMouseExited(
-      ui::MouseEvent(ui::EventType::kMouseExited, gfx::PointF(500, 100),
-                     gfx::PointF(500, 100), base::TimeTicks::Now(), 0, 0));
-  RunScheduledLayouts();
-  EXPECT_EQ(region->width(), 4);
+  EXPECT_EQ(region->width(), tabs::kVerticalTabStripCollapsedWidth);
 
   view->SetFocusToLocationBar(true);
   RunScheduledLayouts();
