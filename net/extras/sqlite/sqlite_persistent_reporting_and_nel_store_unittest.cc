@@ -19,6 +19,7 @@
 #include "base/test/metrics/histogram_tester.h"
 #include "base/test/scoped_feature_list.h"
 #include "base/test/simple_test_clock.h"
+#include "base/test/test_simple_task_runner.h"
 #include "base/threading/thread_restrictions.h"
 #include "base/time/time.h"
 #include "net/base/features.h"
@@ -251,6 +252,17 @@ class SQLitePersistentReportingAndNelStoreTest
   const scoped_refptr<base::SequencedTaskRunner> background_task_runner_ =
       base::ThreadPool::CreateSequencedTaskRunner({base::MayBlock()});
 };
+
+TEST_F(SQLitePersistentReportingAndNelStoreTest, FlushNeedsNoClientNotification) {
+  auto client_runner = base::MakeRefCounted<base::TestSimpleTaskRunner>();
+  store_ = std::make_unique<SQLitePersistentReportingAndNelStore>(
+      temp_dir_.GetPath().Append(kReportingAndNELStoreFilename), client_runner,
+      background_task_runner_);
+  store_->Flush();
+  RunUntilIdle();
+  EXPECT_FALSE(client_runner->HasPendingTask());
+  DestroyStore();
+}
 
 TEST_F(SQLitePersistentReportingAndNelStoreTest, CreateDBAndTables) {
   CreateStore();
