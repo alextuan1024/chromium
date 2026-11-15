@@ -124,6 +124,8 @@ bool BrowserFocusControllerViews::
                   PermissionChipView::kPermissionRequestChipElementId)),
               views::BubbleAnchor(browser_elements_->GetElement(
                   PermissionChipView::kIndicatorChipElementId)),
+              views::BubbleAnchor(
+                  browser_elements_->GetElement(kFallbackPopupAnchorElementId)),
               download_anchor,
               views::BubbleAnchor(GetViewForId(kTopContainerElementId)),
               views::BubbleAnchor(

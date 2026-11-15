@@ -170,6 +170,7 @@ class BrowserFrameView : public views::FrameView {
   // bookmarks bar) change visibility.The window manager is notified of this
   // change via GetWidget()->OnSizeConstraintsChanged().
   virtual void UpdateMinimumSize();
+  virtual void UpdateAutoHideControlsVisibility() {}
 
   // Called when the Window Controls Overlay state changes, allowing the frame
   // to update the state of the caption buttons accordingly.

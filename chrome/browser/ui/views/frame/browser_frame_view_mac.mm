@@ -141,6 +141,7 @@ BrowserFrameViewMac::~BrowserFrameViewMac() {
 // BrowserFrameViewMac, BrowserFrameView implementation:
 
 void BrowserFrameViewMac::OnFullscreenStateChanged() {
+  UpdateAutoHideControlsVisibility();
   if (GetBrowserView()->IsFullscreen()) {
     PictureInPictureWindowManager::GetInstance()
         ->OnAnyBrowserEnteredFullscreen();
@@ -527,6 +528,20 @@ void BrowserFrameViewMac::OnPaint(gfx::Canvas* canvas) {
       GetBrowserView()->browser()->GetProfile());
   if (!theme_service->UsingSystemTheme()) {
     PaintThemedFrame(canvas);
+  }
+}
+
+void BrowserFrameViewMac::UpdateAutoHideControlsVisibility() {
+  const bool enabled = GetBrowserView()->IsAutoHideControlsEnabled();
+  if (!enabled && !auto_hide_controls_active_) {
+    return;
+  }
+  auto_hide_controls_active_ = enabled;
+  NSWindow* window = GetWidget()->GetNativeWindow().GetNativeNSWindow();
+  const bool hidden = enabled && !GetBrowserView()->IsToolbarVisible();
+  for (NSWindowButton button :
+       {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
+    [[window standardWindowButton:button] setHidden:hidden];
   }
 }
 

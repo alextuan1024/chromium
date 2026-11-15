@@ -39,16 +39,16 @@
 BrowserViewLayoutDelegateImpl::BrowserViewLayoutDelegateImpl(
     BrowserView& browser_view)
     : browser_view_(browser_view) {
-    PrefService* prefs = browser_view_->GetProfile()->GetPrefs();
-    tab_search_pinned_to_tab_strip_ =
-        prefs->GetBoolean(prefs::kTabSearchPinnedToTabstrip);
+  PrefService* prefs = browser_view_->GetProfile()->GetPrefs();
+  tab_search_pinned_to_tab_strip_ =
+      prefs->GetBoolean(prefs::kTabSearchPinnedToTabstrip);
 
-    pref_registrar_.Init(prefs);
-    pref_registrar_.Add(
-        prefs::kTabSearchPinnedToTabstrip,
-        base::BindRepeating(
-            &BrowserViewLayoutDelegateImpl::OnTabSearchPinnedStateChanged,
-            base::Unretained(this)));
+  pref_registrar_.Init(prefs);
+  pref_registrar_.Add(
+      prefs::kTabSearchPinnedToTabstrip,
+      base::BindRepeating(
+          &BrowserViewLayoutDelegateImpl::OnTabSearchPinnedStateChanged,
+          base::Unretained(this)));
 }
 BrowserViewLayoutDelegateImpl::~BrowserViewLayoutDelegateImpl() = default;
 
@@ -143,6 +143,10 @@ BrowserViewLayoutDelegateImpl::GetBrowserWindowState() const {
 views::LayoutAlignment BrowserViewLayoutDelegateImpl::GetWindowTitleAlignment()
     const {
   return GetFrameView()->GetWindowTitleAlignment();
+}
+
+bool BrowserViewLayoutDelegateImpl::IsAutoHideControlsEnabled() const {
+  return browser_view_->IsAutoHideControlsEnabled();
 }
 
 bool BrowserViewLayoutDelegateImpl::IsToolbarVisible() const {

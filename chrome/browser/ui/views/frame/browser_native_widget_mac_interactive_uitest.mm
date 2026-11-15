@@ -30,6 +30,7 @@
 #include "chrome/browser/ui/views/frame/browser_view.h"
 #include "chrome/browser/ui/views/frame/browser_widget.h"
 #include "chrome/browser/ui/views/location_bar/location_bar_view.h"
+#include "chrome/browser/ui/views/toolbar/toolbar_view.h"
 #include "chrome/common/chrome_features.h"
 #include "chrome/common/webui_url_constants.h"
 #include "chrome/test/base/in_process_browser_test.h"
@@ -40,8 +41,10 @@
 #include "components/viz/common/frame_timing_details.h"
 #include "content/public/browser/web_contents_delegate.h"
 #include "content/public/test/browser_test.h"
+#include "content/public/test/browser_test_utils.h"
 #include "third_party/blink/public/mojom/frame/fullscreen.mojom.h"
 #include "ui/base/page_transition_types.h"
+#include "ui/base/test/ui_controls.h"
 #include "ui/base/ui_base_features.h"
 #include "ui/color/color_id.h"
 #include "ui/color/color_provider.h"
@@ -223,7 +226,8 @@ class BrowserNativeWidgetMacGlassTest : public InProcessBrowserTest {
   base::test::ScopedFeatureList scoped_feature_list_;
 };
 
-IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest, ActiveInactiveTintOpacity) {
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest,
+                       ActiveInactiveTintOpacity) {
   if (!features::IsGlassFrameEnabled()) {
     GTEST_SKIP() << "Glass frame feature is disabled.";
   }
@@ -249,12 +253,12 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest, ActiveInactiveTintOpacit
       return SK_ColorTRANSPARENT;
     }
     NSColor* ns_color = [NSColor colorWithCGColor:cg_color];
-    NSColor* srgb_color = [ns_color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-    return SkColorSetARGB(
-        static_cast<U8CPU>(srgb_color.alphaComponent * 255),
-        static_cast<U8CPU>(srgb_color.redComponent * 255),
-        static_cast<U8CPU>(srgb_color.greenComponent * 255),
-        static_cast<U8CPU>(srgb_color.blueComponent * 255));
+    NSColor* srgb_color =
+        [ns_color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    return SkColorSetARGB(static_cast<U8CPU>(srgb_color.alphaComponent * 255),
+                          static_cast<U8CPU>(srgb_color.redComponent * 255),
+                          static_cast<U8CPU>(srgb_color.greenComponent * 255),
+                          static_cast<U8CPU>(srgb_color.blueComponent * 255));
   };
 
   auto get_color_from_views = [&](NSView* t_view, NSView* g_view) {
@@ -263,12 +267,12 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest, ActiveInactiveTintOpacit
     }
     CHECK(g_view);
     NSColor* t_color = [(id)g_view tintColor];
-    NSColor* srgb_color = [t_color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
-    return SkColorSetARGB(
-        static_cast<U8CPU>(srgb_color.alphaComponent * 255),
-        static_cast<U8CPU>(srgb_color.redComponent * 255),
-        static_cast<U8CPU>(srgb_color.greenComponent * 255),
-        static_cast<U8CPU>(srgb_color.blueComponent * 255));
+    NSColor* srgb_color =
+        [t_color colorUsingColorSpace:[NSColorSpace sRGBColorSpace]];
+    return SkColorSetARGB(static_cast<U8CPU>(srgb_color.alphaComponent * 255),
+                          static_cast<U8CPU>(srgb_color.redComponent * 255),
+                          static_cast<U8CPU>(srgb_color.greenComponent * 255),
+                          static_cast<U8CPU>(srgb_color.blueComponent * 255));
   };
 
   // Initially active.
@@ -291,7 +295,8 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest, ActiveInactiveTintOpacit
 
   SkColor deactivated_color =
       get_color_from_views(tint_view_deactivated, glass_view_deactivated);
-  EXPECT_EQ(SkColorSetA(deactivated_color, 255), SkColorSetA(inactive_color, 255));
+  EXPECT_EQ(SkColorSetA(deactivated_color, 255),
+            SkColorSetA(inactive_color, 255));
 }
 
 IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacGlassTest,
@@ -947,4 +952,69 @@ IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacDeferInputContextTest,
                       ->GetLocationBarView()
                       ->GetOmniboxView()
                       ->GetText());
+}
+
+IN_PROC_BROWSER_TEST_F(BrowserNativeWidgetMacInteractiveTest,
+                       AutoHideTrafficLightsFollowToolbar) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  ASSERT_TRUE(view->IsAutoHideControlsEnabled());
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
+      view->GetBoundsInScreen().CenterPoint()));
+  browser()->tab_strip_model()->GetActiveWebContents()->Focus();
+  ASSERT_TRUE(base::test::RunUntil([&] { return !view->IsToolbarVisible(); }));
+  NSWindow* window = view->GetWidget()->GetNativeWindow().GetNativeNSWindow();
+  for (NSWindowButton type :
+       {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
+    EXPECT_TRUE([[window standardWindowButton:type] isHidden]);
+  }
+  auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
+  ASSERT_TRUE(content::ExecJs(
+      contents, "window.clicks = 0; document.addEventListener('click', () => "
+                "++window.clicks);"));
+  const auto window_bounds = view->GetBoundsInScreen();
+  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
+      gfx::Point(window_bounds.x() + 30, window_bounds.y() + 23)));
+  ASSERT_TRUE(ui_test_utils::SendMouseEventsSync(
+      ui_controls::LEFT, ui_controls::DOWN | ui_controls::UP));
+  EXPECT_EQ(1, content::EvalJs(contents, "window.clicks"));
+  EXPECT_FALSE(view->IsToolbarVisible());
+
+  view->SetFocusToLocationBar(true);
+  view->GetWidget()->GetRootView()->DeprecatedLayoutImmediately();
+  const auto toolbar_bounds = view->toolbar()->GetBoundsInScreen();
+  for (NSWindowButton type :
+       {NSWindowCloseButton, NSWindowMiniaturizeButton, NSWindowZoomButton}) {
+    NSButton* button = [window standardWindowButton:type];
+    EXPECT_FALSE(button.hidden);
+    EXPECT_TRUE(button.enabled);
+    NSRect rect = [button convertRect:button.bounds toView:window.contentView];
+    const CGFloat center_from_top =
+        NSHeight(window.contentView.bounds) - NSMidY(rect);
+    EXPECT_NEAR(
+        center_from_top,
+        toolbar_bounds.CenterPoint().y() - view->GetBoundsInScreen().y(), 2);
+  }
+  [[window standardWindowButton:NSWindowMiniaturizeButton] performClick:nil];
+  EXPECT_TRUE(base::test::RunUntil([&] { return window.miniaturized; }));
+  [window deminiaturize:nil];
+  EXPECT_TRUE(base::test::RunUntil([&] { return !window.miniaturized; }));
+  ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
+  view->SetFocusToLocationBar(true);
+  ui_test_utils::FullscreenWaiter fullscreen_waiter(
+      browser(), {.browser_fullscreen = true});
+  [[window standardWindowButton:NSWindowZoomButton] performClick:nil];
+  fullscreen_waiter.Wait();
+  EXPECT_TRUE(view->IsFullscreen());
+  ui_test_utils::ToggleFullscreenModeAndWait(browser());
+  EXPECT_TRUE(view->IsAutoHideControlsEnabled());
+
+  auto* second_browser = CreateBrowser(browser()->GetProfile());
+  auto* second_view = BrowserView::GetBrowserViewForBrowser(second_browser);
+  second_view->SetFocusToLocationBar(true);
+  NSWindow* second_window =
+      second_view->GetWidget()->GetNativeWindow().GetNativeNSWindow();
+  ui_test_utils::BrowserDestroyedObserver closed(second_browser);
+  [[second_window standardWindowButton:NSWindowCloseButton] performClick:nil];
+  closed.Wait();
 }

@@ -968,6 +968,9 @@ export class AppElement extends AppElementBase {
     // Integration tests use this attribute to determine when lazy load has
     // completed.
     document.documentElement.setAttribute('lazy-loaded', String(true));
+    if (loadTimeData.getBoolean('autoFocusSearchbox') && document.hasFocus()) {
+      this.$.searchbox.focusInput();
+    }
     if (this.maybeRegisterCustomizeButtonHelpBubble_()) {
       this.pageHandler_.maybeTriggerAutomaticCustomizeChromePromo();
     }
