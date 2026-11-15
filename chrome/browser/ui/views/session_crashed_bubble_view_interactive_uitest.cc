@@ -153,3 +153,20 @@ IN_PROC_BROWSER_TEST_F(SessionCrashedBubbleViewTest,
 
   EXPECT_EQ(initial_tab_count, browser()->tab_strip_model()->count());
 }
+
+#if BUILDFLAG(IS_MAC)
+IN_PROC_BROWSER_TEST_F(SessionCrashedBubbleViewTest,
+                       HiddenToolbarBeforeWindowIsShown) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  ASSERT_TRUE(view->IsAutoHideControlsEnabled());
+  ASSERT_FALSE(view->IsToolbarVisible());
+  view->GetWidget()->Hide();
+  view->SetVisible(false);
+  ShowUi("SessionCrashedBubble");
+  ASSERT_TRUE(crash_bubble_);
+  view->SetVisible(true);
+  view->GetWidget()->Show();
+  EXPECT_TRUE(crash_bubble_->GetWidget()->IsVisible());
+  EXPECT_FALSE(view->IsToolbarVisible());
+}
+#endif

@@ -838,6 +838,7 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
 
   BrowserLayoutParams params = layout_data_->revised_params;
   bool needs_exclusion = true;
+  const bool auto_hide_controls = delegate().IsAutoHideControlsEnabled();
   const HorizontalLayout& horizontal_layout = layout_data_->horizontal_layout;
 
   const int target_organizer_width =
@@ -1043,7 +1044,7 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
 
   // When the tabstrip isn't at the top or in constrained widths, the top
   // container is laid out before all side panels.
-  if (horizontal_layout.force_top_container_to_top &&
+  if (!auto_hide_controls && horizontal_layout.force_top_container_to_top &&
       IsParentedTo(views().top_container, views().browser_view)) {
     auto& top_container_layout =
         layout.AddChild(views().top_container, gfx::Rect());
@@ -1179,7 +1180,7 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
   // Lay out top container. The top container is laid out after the
   // toolbar-height side panel with a horizontal tabstrip if the browser is wide
   // enough.
-  if (!horizontal_layout.force_top_container_to_top &&
+  if (!auto_hide_controls && !horizontal_layout.force_top_container_to_top &&
       IsParentedTo(views().top_container, views().browser_view)) {
     auto& top_container_layout =
         layout.AddChild(views().top_container, gfx::Rect());
@@ -1189,6 +1190,19 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
     top_container_layout.bounds =
         GetTopContainerBoundsInParent(top_container_local_bounds, params);
     params.SetTop(top_container_layout.bounds.bottom());
+  }
+
+  if (auto_hide_controls &&
+      IsParentedTo(views().top_container, views().browser_view)) {
+    auto& top_container_layout = layout.AddChild(
+        views().top_container, gfx::Rect(), delegate().IsToolbarVisible());
+    // Reserve caption space only inside the overlay, never in the page/sidebar.
+    const auto overlay_params =
+        browser_params.InLocalCoordinates(browser_params.visual_client_area);
+    const auto bounds = CalculateTopContainerLayout(
+        top_container_layout, overlay_params, /*needs_exclusion=*/true);
+    top_container_layout.bounds =
+        GetTopContainerBoundsInParent(bounds, browser_params);
   }
 
   // Lay out infobar container.
@@ -1568,6 +1582,10 @@ void BrowserViewTabbedLayoutImpl::OnGlassModeChanged() {
 void BrowserViewTabbedLayoutImpl::DoPreLayoutComputations(
     const BrowserLayoutParams& params) {
   layout_data_ = std::make_unique<TransientLayoutData>(params);
+  if (delegate().IsAutoHideControlsEnabled()) {
+    layout_data_->revised_params.leading_exclusion = {};
+    layout_data_->revised_params.trailing_exclusion = {};
+  }
   layout_data_->window_state = delegate().GetBrowserWindowState();
   layout_data_->tab_strip_type = delegate().GetTabStripType();
   layout_data_->organizer_panel_animation = CalculateOrganizerPanelAnimation();
@@ -1917,6 +1935,13 @@ void BrowserViewTabbedLayoutImpl::DoPostLayoutVisualAdjustments(
     }
     toolbar_background->SetCornerColor(frame_color);
     top_container_background->SetCornerColor(frame_color);
+  }
+
+  if (delegate().IsAutoHideControlsEnabled()) {
+    toolbar_background->SetCutoutFrom({});
+    top_container_background->SetCutoutFrom({});
+    top_container_background->SetPrimaryColor(
+        CustomCornersBackground::ToolbarTheme());
   }
 
   views().side_panel_content_transition_scrim->layer()->SetOpacity(

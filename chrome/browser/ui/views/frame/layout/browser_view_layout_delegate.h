@@ -47,6 +47,7 @@ class BrowserViewLayoutDelegate {
   virtual WindowState GetBrowserWindowState() const = 0;
   virtual views::LayoutAlignment GetWindowTitleAlignment() const = 0;
   virtual bool IsToolbarVisible() const = 0;
+  virtual bool IsAutoHideControlsEnabled() const = 0;
   virtual bool IsBookmarkBarVisible() const = 0;
   virtual bool IsInfobarVisible() const = 0;
   virtual bool IsContentsSeparatorEnabled() const = 0;

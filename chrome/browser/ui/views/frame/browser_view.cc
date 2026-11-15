@@ -357,6 +357,7 @@
 #include "ui/views/bubble/bubble_dialog_delegate_view.h"
 #include "ui/views/controls/button/menu_button.h"
 #include "ui/views/controls/label.h"
+#include "ui/views/controls/menu/menu_controller.h"
 #include "ui/views/controls/textfield/textfield.h"
 #include "ui/views/controls/webview/webview.h"
 #include "ui/views/interaction/element_tracker_views.h"
@@ -1152,6 +1153,8 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
 }
 
 BrowserView::~BrowserView() {
+  auto_hidden_toolbar_event_monitor_.reset();
+  auto_hidden_toolbar_timer_.Stop();
   // Remove the layout manager to avoid dangling. This needs to be earlier than
   // other cleanups that destroy views referenced in the layout manager.
   SetLayoutManager(nullptr);
@@ -2472,6 +2475,14 @@ PinnedToolbarActions* BrowserView::GetPinnedToolbarActions() {
 }
 
 void BrowserView::SetFocusToLocationBar(bool is_user_initiated) {
+  if (is_user_initiated) {
+    RevealAutoHiddenToolbar();
+  } else if (IsAutoHideControlsEnabled() && !IsToolbarVisible()) {
+    if (auto* contents = GetActiveWebContents()) {
+      contents->Focus();
+    }
+    return;
+  }
   // On Windows, changing focus to the location bar causes the browser window to
   // become active. This can steal focus if the user has another window open
   // already. On Chrome OS, changing focus makes a view believe it has a focus
@@ -2535,6 +2546,7 @@ void BrowserView::ResetToolbarTabState(content::WebContents* contents) {
 }
 
 void BrowserView::FocusToolbar() {
+  RevealAutoHiddenToolbar();
   // Temporarily reveal the top-of-window views (if not already revealed) so
   // that the toolbar is visible and is considered focusable. If the
   // toolbar gains focus, ImmersiveModeController will keep the top-of-window
@@ -3228,7 +3240,86 @@ void BrowserView::DisableTabStripEditingForTesting() {
   tab_strip_view()->DisableTabStripEditingForTesting();  // IN-TEST
 }
 
+bool BrowserView::IsAutoHideControlsEnabled() const {
+#if BUILDFLAG(IS_MAC)
+  auto* controller = tabs::VerticalTabStripStateController::From(browser_);
+  return browser_->GetType() == BrowserWindowInterface::Type::TYPE_NORMAL &&
+         !IsFullscreen() && controller &&
+         controller->ShouldDisplayVerticalTabs();
+#else
+  return false;
+#endif
+}
+
+void BrowserView::OnEvent(const ui::Event& event) {
+  UpdateAutoHiddenToolbar();
+}
+
+void BrowserView::UpdateAutoHiddenToolbar() {
+  if (!IsAutoHideControlsEnabled() || !GetWidget() ||
+      suppress_layout_for_teardown_) {
+    auto_hidden_toolbar_timer_.Stop();
+    auto_hidden_toolbar_dismissal_start_.reset();
+    return;
+  }
+  const gfx::Point cursor = display::Screen::Get()->GetCursorScreenPoint();
+  gfx::Rect trigger = GetBoundsInScreen();
+  trigger.set_height(4);
+  const bool hovered = GetWidget()->IsActive() &&
+                       (trigger.Contains(cursor) ||
+                        (auto_hidden_toolbar_revealed_ &&
+                         top_container_->GetBoundsInScreen().Contains(cursor)));
+  const bool interacting =
+      hovered ||
+      (GetWidget()->IsActive() &&
+       toolbar_->Contains(GetFocusManager()->GetFocusedView())) ||
+      views::MenuController::GetForOwnerWidget(GetWidget());
+  if (auto_hidden_toolbar_pinned_ || interacting) {
+    auto_hidden_toolbar_dismissal_start_.reset();
+    if (hovered || auto_hidden_toolbar_pinned_) {
+      RevealAutoHiddenToolbar();
+    }
+    return;
+  }
+  if (!auto_hidden_toolbar_revealed_) {
+    return;
+  }
+  if (!auto_hidden_toolbar_dismissal_start_) {
+    auto_hidden_toolbar_dismissal_start_ = base::TimeTicks::Now();
+  } else if (base::TimeTicks::Now() - *auto_hidden_toolbar_dismissal_start_ >=
+             base::Milliseconds(250)) {
+    SetAutoHiddenToolbarRevealed(false);
+  }
+}
+
+void BrowserView::SetAutoHiddenToolbarRevealed(bool revealed) {
+  if (auto_hidden_toolbar_revealed_ == revealed) {
+    return;
+  }
+  auto_hidden_toolbar_revealed_ = revealed;
+  auto_hidden_toolbar_dismissal_start_.reset();
+  if (revealed) {
+    // Continue checking when the pointer leaves the app or a menu closes.
+    auto_hidden_toolbar_timer_.Start(FROM_HERE, base::Milliseconds(50), this,
+                                     &BrowserView::UpdateAutoHiddenToolbar);
+  } else {
+    auto_hidden_toolbar_timer_.Stop();
+  }
+  InvalidateLayout();
+  GetWidget()->GetRootView()->DeprecatedLayoutImmediately();
+}
+
+void BrowserView::RevealAutoHiddenToolbar() {
+  if (IsAutoHideControlsEnabled() && toolbar_ && GetWidget()) {
+    SetAutoHiddenToolbarRevealed(true);
+  }
+}
+
 bool BrowserView::IsToolbarVisible() const {
+  if (IsAutoHideControlsEnabled() && !auto_hidden_toolbar_revealed_) {
+    return false;
+  }
+
 #if BUILDFLAG(IS_MAC)
   // Immersive full screen makes it possible to display the toolbar when
   // kShowFullscreenToolbar is not set.
@@ -4368,6 +4459,8 @@ views::View* BrowserView::CreateMacOverlayView() {
 #endif  // IS_MAC
 
 void BrowserView::OnWidgetDestroying(views::Widget* widget) {
+  auto_hidden_toolbar_event_monitor_.reset();
+  auto_hidden_toolbar_timer_.Stop();
   CHECK(widget_observation_.IsObservingSource(widget),
         base::NotFatalUntil::M162);
   widget_observation_.Reset();
@@ -4827,6 +4920,14 @@ views::CloseRequestResult BrowserView::OnWindowCloseRequested() {
 }
 
 int BrowserView::NonClientHitTest(const gfx::Point& point) {
+  if (IsAutoHideControlsEnabled() && IsToolbarVisible()) {
+    gfx::Point toolbar_point(point);
+    if (ConvertedHitTest(parent(), top_container_, &toolbar_point)) {
+      return top_container_->IsPositionInWindowCaption(toolbar_point)
+                 ? HTCAPTION
+                 : HTCLIENT;
+    }
+  }
 #if BUILDFLAG(IS_MAC)
   // The top container while in immersive fullscreen on macOS lives in another
   // Widget (OverlayWidgetMac). This means that BrowserView does not need to
@@ -5108,6 +5209,45 @@ void BrowserView::Layout(PassKey) {
   }
 
   LayoutSuperclass<views::View>(this);
+
+  if (IsAutoHideControlsEnabled()) {
+    if (!auto_hidden_toolbar_event_monitor_) {
+      auto_hidden_toolbar_event_monitor_ =
+          views::EventMonitor::CreateApplicationMonitor(
+              this, GetWidget()->GetNativeWindow(),
+              {ui::EventType::kMouseMoved, ui::EventType::kMouseEntered,
+               ui::EventType::kMouseExited, ui::EventType::kMouseDragged});
+    }
+    if (top_container_->parent() == this) {
+      top_container_->SetPaintToLayer();
+      top_container_->layer()->SetFillsBoundsOpaquely(false);
+      const size_t current_index = GetIndexOf(top_container_).value();
+      const size_t scrim_index = GetIndexOf(window_scrim_view_).value();
+      const size_t overlay_index =
+          scrim_index - (current_index < scrim_index ? 1 : 0);
+      if (current_index != overlay_index) {
+        ReorderChildView(top_container_, overlay_index);
+        EnsureFocusOrder();
+      }
+      auto_hidden_toolbar_overlay_ = true;
+    }
+    if (auto_hidden_toolbar_revealed_ &&
+        !auto_hidden_toolbar_timer_.IsRunning()) {
+      auto_hidden_toolbar_timer_.Start(FROM_HERE, base::Milliseconds(50), this,
+                                       &BrowserView::UpdateAutoHiddenToolbar);
+    }
+  } else {
+    auto_hidden_toolbar_event_monitor_.reset();
+    auto_hidden_toolbar_timer_.Stop();
+    auto_hidden_toolbar_dismissal_start_.reset();
+    if (auto_hidden_toolbar_overlay_ && top_container_->parent() == this) {
+      top_container_->DestroyLayer();
+      ReorderChildView(top_container_, top_container_insertion_index_.value());
+      auto_hidden_toolbar_overlay_ = false;
+    }
+    top_container_->SetVisible(true);
+  }
+  GetFrameView()->UpdateAutoHideControlsVisibility();
 
   // TODO(jamescook): Why was this in the middle of layout code?
   toolbar_->location_bar()->UpdateFocusBehavior(IsToolbarVisible());
@@ -5483,6 +5623,20 @@ const views::View* BrowserView::GetViewByElementId(
 
 bool BrowserView::AcceleratorPressed(const ui::Accelerator& accelerator) {
 #if BUILDFLAG(IS_MAC)
+  if (IsAutoHideControlsEnabled() &&
+      accelerator == ui::Accelerator(ui::VKEY_K,
+                                     ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN)) {
+    auto_hidden_toolbar_pinned_ = !auto_hidden_toolbar_pinned_;
+    if (!auto_hidden_toolbar_pinned_ &&
+        toolbar_->Contains(GetFocusManager()->GetFocusedView())) {
+      if (auto* contents = GetActiveWebContents()) {
+        contents->Focus();
+      }
+    }
+    SetAutoHiddenToolbarRevealed(auto_hidden_toolbar_pinned_);
+    return true;
+  }
+
   // Forward accelerators to ExclusiveAccessManager to handle Esc press-and-hold
   // fullscreen exit when native UI has focus on macOS (crbug.com/460745767).
   NativeWebKeyboardEvent native_event(accelerator.ToKeyEvent());
@@ -5957,6 +6111,10 @@ void BrowserView::LoadAccelerators() {
   }
 
 #if BUILDFLAG(IS_MAC)
+  focus_manager->RegisterAccelerator(
+      ui::Accelerator(ui::VKEY_K, ui::EF_COMMAND_DOWN | ui::EF_SHIFT_DOWN),
+      ui::AcceleratorManager::kNormalPriority, this);
+
   // Register the Esc accelerators (both press and release) to ensure they are
   // sent to the ExclusiveAccessManager for press-and-hold fullscreen exit.
   // This is only needed on macOS due to AppKit fullscreen transitions leaving
@@ -6331,6 +6489,7 @@ void BrowserView::OnWillChangeFocus(View* focused_before, View* focused_now) {
 }
 void BrowserView::OnDidChangeFocus(View* focused_before, View* focused_now) {
   UpdateAccessibleNameForRootView();
+  UpdateAutoHiddenToolbar();
 }
 
 WebAppFrameToolbarView* BrowserView::web_app_frame_toolbar() {

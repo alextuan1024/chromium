@@ -120,6 +120,8 @@ bool BrowserFocusControllerViews::
     for (const views::BubbleAnchor& anchor : std::to_array<views::BubbleAnchor>(
              {views::BubbleAnchor(
                   browser_elements_->GetElement(kLocationBarElementId)),
+              views::BubbleAnchor(
+                  browser_elements_->GetElement(kFallbackPopupAnchorElementId)),
               download_anchor,
               views::BubbleAnchor(GetViewForId(kTopContainerElementId)),
               views::BubbleAnchor(

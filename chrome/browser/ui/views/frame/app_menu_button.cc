@@ -60,8 +60,8 @@ views::BubbleAnchor AppMenuButton::GetAnchor() {
   auto* const elements = BrowserElementsViews::From(this);
   CHECK(elements);
   auto* const element = elements->GetElement(kFallbackPopupAnchorElementId);
-  CHECK(element);
-  return views::BubbleAnchor(element);
+  // Startup bubbles can precede registration of the window's fallback anchor.
+  return element ? views::BubbleAnchor(element) : views::BubbleAnchor(this);
 }
 
 bool AppMenuButton::IsDrawn() const {

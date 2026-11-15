@@ -31,6 +31,7 @@ class BrowserViewLayoutDelegateImpl : public BrowserViewLayoutDelegate {
   WindowState GetBrowserWindowState() const override;
   views::LayoutAlignment GetWindowTitleAlignment() const override;
   bool IsToolbarVisible() const override;
+  bool IsAutoHideControlsEnabled() const override;
   bool IsBookmarkBarVisible() const override;
   bool IsInfobarVisible() const override;
   bool IsContentsSeparatorEnabled() const override;
