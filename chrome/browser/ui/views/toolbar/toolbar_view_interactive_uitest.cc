@@ -638,16 +638,7 @@ class ToolbarViewVerticalTabsRTLTest
 };
 
 class ToolbarViewVerticalTabsTest
-    : public VerticalTabsInteractiveTestMixin<ToolbarViewTest> {
- public:
-  void SetUp() override {
-    scoped_feature_list_.InitAndEnableFeature(tabs::kVerticalTabs);
-    ToolbarViewTest::SetUp();
-  }
-
- private:
-  base::test::ScopedFeatureList scoped_feature_list_;
-};
+    : public VerticalTabsInteractiveTestMixin<ToolbarViewTest> {};
 
 IN_PROC_BROWSER_TEST_P(ToolbarViewVerticalTabsTest,
                        CollapseButtonPrecedesBackButton) {

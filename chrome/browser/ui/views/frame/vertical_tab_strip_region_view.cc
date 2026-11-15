@@ -525,6 +525,11 @@ void VerticalTabStripRegionView::Layout(PassKey) {
 
 gfx::Size VerticalTabStripRegionView::GetMinimumSize() const {
   auto min_size = BaseTabStripRegionView::GetMinimumSize();
+  if (browser_view()->IsAutoHideControlsEnabled() &&
+      state_controller_->IsCollapsed()) {
+    min_size.set_width(4);
+    return min_size;
+  }
   min_size.set_width((state_controller_->IsCollapsed() || IsAnimatingSize())
                          ? tabs::kVerticalTabStripCollapsedWidth
                          : tabs::kVerticalTabStripUncollapsedMinWidth);
@@ -538,13 +543,15 @@ gfx::Size VerticalTabStripRegionView::CalculatePreferredSize(
       BrowserAnimationController::From(browser_view()->browser());
   const auto motion =
       controller->GetCurrentMotion(TabStripAnimations::kVerticalTabStrip);
+  const int collapsed_width = browser_view()->IsAutoHideControlsEnabled()
+                                  ? 4
+                                  : tabs::kVerticalTabStripCollapsedWidth;
   const int expand_amount =
-      std::max(0, target_collapse_state_.uncollapsed_width -
-                      tabs::kVerticalTabStripCollapsedWidth);
+      std::max(0, target_collapse_state_.uncollapsed_width - collapsed_width);
   const double expand_percent =
       *controller->GetCurrentValue(TabStripAnimations::kVerticalTabStrip,
                                    TabStripAnimations::kTabStripWidth);
-  size.set_width(tabs::kVerticalTabStripCollapsedWidth +
+  size.set_width(collapsed_width +
                  (motion == TabStripAnimations::kExpand
                       ? std::floor<double>
                       : std::ceil<double>)(expand_amount * expand_percent));
@@ -1069,6 +1076,12 @@ void VerticalTabStripRegionView::UpdateExpandOnHoverState(
 
   // If the region is already expanded, do nothing.
   if (is_expanded_on_hover_) {
+    return;
+  }
+
+  // Entering the narrow reveal edge is deliberate; no velocity delay is needed.
+  if (browser_view()->IsAutoHideControlsEnabled()) {
+    AnimateExpandOnHover(/*expand=*/true);
     return;
   }
 

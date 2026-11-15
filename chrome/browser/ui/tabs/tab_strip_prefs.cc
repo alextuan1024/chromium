@@ -5,6 +5,7 @@
 #include "chrome/browser/ui/tabs/tab_strip_prefs.h"
 
 #include "base/time/time.h"
+#include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
 #include "chrome/browser/ui/actions/chrome_action_id.h"
 #include "chrome/browser/ui/tabs/features.h"
@@ -25,10 +26,11 @@ void RegisterProfilePrefs(user_prefs::PrefRegistrySyncable* registry) {
   registry->RegisterBooleanPref(prefs::kOrganizerPanelPinnedToTabstrip, true);
   registry->RegisterBooleanPref(prefs::kEverythingMenuPinnedToTabstrip, true);
   registry->RegisterBooleanPref(prefs::kTabScrollButtonsPinnedToTabstrip, true);
-  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, false);
+  registry->RegisterBooleanPref(prefs::kVerticalTabsEnabled, BUILDFLAG(IS_MAC));
   registry->RegisterBooleanPref(prefs::kVerticalTabsExpandOnHoverEnabled, true);
   registry->RegisterBooleanPref(prefs::kVerticalTabsEnabledFirstTime, false);
-  registry->RegisterBooleanPref(prefs::kVerticalTabsCollapsedState, false);
+  registry->RegisterBooleanPref(prefs::kVerticalTabsCollapsedState,
+                                BUILDFLAG(IS_MAC));
   registry->RegisterIntegerPref(prefs::kVerticalTabsUncollapsedWidth,
                                 kVerticalTabStripDefaultUncollapsedWidth);
   registry->RegisterTimePref(prefs::kVerticalTabsEverythingMenuLastPressed,

@@ -49,6 +49,7 @@ suite('NewTabPageAppTest', () => {
   suiteSetup(() => {
     Object.assign(window, {webkitSpeechRecognition: MockSpeechRecognition});
     loadTimeData.overrideValues({
+      autoFocusSearchbox: false,
       composeboxPersistentAimButton: false,
       composeboxPersistentAimButtonWithX: false,
       composeboxRealboxOutsideClick: false,
@@ -193,6 +194,19 @@ suite('NewTabPageAppTest', () => {
         voiceSearchCoherenceAnySearchboxExperimentEnabled: false,
         voiceSearchCoherenceSearchboxWithLiveTranscriptionEnabled: false,
       });
+    });
+
+    test('focuses searchbox after lazy rendering', async () => {
+      loadTimeData.overrideValues({autoFocusSearchbox: true});
+      try {
+        await recreateApp();
+        assertEquals(app.$.searchbox, app.shadowRoot.activeElement);
+        const input = getDeepActiveElement();
+        assertTrue(input instanceof HTMLInputElement ||
+            input instanceof HTMLTextAreaElement);
+      } finally {
+        loadTimeData.overrideValues({autoFocusSearchbox: false});
+      }
     });
 
     test('logs height', () => {

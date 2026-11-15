@@ -260,6 +260,9 @@ void VerticalTabStripStateControllerImpl::NotifyCollapseChanged() {
 void VerticalTabStripStateControllerImpl::OnModeChanged() {
   const bool new_enabled =
       pref_service_->GetBoolean(prefs::kVerticalTabsEnabled);
+  if (new_enabled == is_vertical_tabs_enabled_) {
+    return;
+  }
   if (new_enabled &&
       !pref_service_->GetBoolean(prefs::kVerticalTabsEnabledFirstTime)) {
     base::RecordAction(

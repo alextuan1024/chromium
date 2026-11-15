@@ -306,6 +306,7 @@ base::DictValue BuildLoadTimeData(Profile* profile,
   dict.Set("androidSpeechRecognition",
            static_cast<bool>(BUILDFLAG(IS_ANDROID)));
 
+  dict.Set("autoFocusSearchbox", static_cast<bool>(BUILDFLAG(IS_MAC)));
   dict.Set("ntpRealboxNextEnabled",
            ntp_realbox::IsNtpRealboxNextEnabled(profile));
   // Fusebox being enabled on the NTP is the same as realbox next being
