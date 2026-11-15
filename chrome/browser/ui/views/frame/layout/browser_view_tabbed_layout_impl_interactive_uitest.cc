@@ -17,6 +17,7 @@
 #include "base/strings/stringprintf.h"
 #include "base/task/single_thread_task_runner.h"
 #include "base/test/run_until.h"
+#include "base/test/mock_log.h"
 #include "base/test/scoped_feature_list.h"
 #include "build/build_config.h"
 #include "chrome/browser/profiles/profile.h"
@@ -32,6 +33,8 @@
 #include "chrome/browser/ui/tabs/organizer/organizer_panel_utils.h"
 #include "chrome/browser/ui/tabs/public/tab_features.h"
 #include "chrome/browser/ui/tabs/split_tab_metrics.h"
+#include "chrome/browser/ui/omnibox/omnibox_next_features.h"
+#include "chrome/browser/ui/webui/ntp/new_tab_ui.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state.h"
 #include "chrome/browser/ui/tabs/vertical_tab_strip_state_controller.h"
 #include "chrome/browser/ui/ui_features.h"
@@ -1104,6 +1107,11 @@ IN_PROC_BROWSER_TEST_F(BrowserViewHorizontalTabStripOldLayoutUiTest,
 #if BUILDFLAG(IS_MAC)
 class AutoHideBrowserControlsUiTest : public BrowserViewTabbedLayoutImplUiTest {
  public:
+  AutoHideBrowserControlsUiTest() {
+    // Native menu-bar scene creation can block unrelated window-focus tests.
+    background_feature_list_.InitAndDisableFeature(omnibox::kOmniboxEverywhere);
+  }
+
   void SetUpOnMainThread() override {
     BrowserViewTabbedLayoutImplUiTest::SetUpOnMainThread();
     ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
@@ -1114,7 +1122,20 @@ class AutoHideBrowserControlsUiTest : public BrowserViewTabbedLayoutImplUiTest {
     ASSERT_TRUE(
         base::test::RunUntil([&] { return !view->IsToolbarVisible(); }));
   }
+
+ private:
+  base::test::ScopedFeatureList background_feature_list_;
 };
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       RegularProfileRejectsIncognitoConfigWithoutError) {
+  base::test::MockLog log;
+  EXPECT_CALL(log, Log(testing::Ge(logging::LOGGING_WARNING), testing::_,
+                       testing::_, testing::_, testing::_)).Times(0);
+  log.StartCapturingLogs();
+  NewTabUIConfig config;
+  EXPECT_FALSE(config.IsWebUIEnabled(browser()->GetProfile()));
+}
 
 IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
                        MenuKeepsToolbarRevealed) {
@@ -1207,6 +1228,8 @@ IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
   auto* view = BrowserView::GetBrowserViewForBrowser(browser());
   ASSERT_FALSE(view->IsToolbarVisible());
   chrome::NewTab(browser(), NewTabTypes::kNewTabCommand);
+  ASSERT_TRUE(content::WaitForLoadStop(
+      browser()->tab_strip_model()->GetActiveWebContents()));
   RunScheduledLayouts();
   EXPECT_FALSE(view->IsToolbarVisible());
   view->SetFocusToLocationBar(false);

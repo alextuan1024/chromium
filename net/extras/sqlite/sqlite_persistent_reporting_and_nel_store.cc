@@ -1518,7 +1518,8 @@ void SQLitePersistentReportingAndNelStore::DeleteReportingEndpointGroup(
 }
 
 void SQLitePersistentReportingAndNelStore::Flush() {
-  backend_->Flush(base::DoNothing());
+  // No completion notification is needed, including during client shutdown.
+  backend_->Flush(base::OnceClosure());
 }
 
 size_t SQLitePersistentReportingAndNelStore::GetQueueLengthForTesting() const {
