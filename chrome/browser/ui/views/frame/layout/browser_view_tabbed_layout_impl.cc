@@ -295,7 +295,8 @@ BrowserViewTabbedLayoutImpl::CalculateSeparatorInfo() const {
       info.shadow_box =
           has_side_panel && (has_infobar || !is_split_view || !is_force_to_top);
       const bool suppress_separator = info.shadow_box && is_force_to_top;
-      info.multi_contents_separator = !suppress_separator && !has_infobar;
+      info.multi_contents_separator = !suppress_separator && !has_infobar &&
+                                      !delegate().IsAutoHideControlsEnabled();
       info.top_container_separator = !suppress_separator && has_infobar;
       info.side_panel_top_padding = !is_force_to_top;
       info.adjust_for_missing_separator =
