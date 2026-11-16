@@ -1149,7 +1149,7 @@ IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
 }
 
 IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
-                       TopEdgeHoverAndDelayedDismissal) {
+                       TopEdgeHoverDoesNotRevealToolbar) {
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
   auto* view = BrowserView::GetBrowserViewForBrowser(browser());
   auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
@@ -1163,18 +1163,11 @@ IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
   ASSERT_FALSE(view->IsToolbarVisible());
   ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
       gfx::Point(bounds.CenterPoint().x(), bounds.y() + 2)));
-  ASSERT_TRUE(base::test::RunUntil([&] { return view->IsToolbarVisible(); }));
-  RunScheduledLayouts();
-  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
-      view->toolbar()->GetBoundsInScreen().CenterPoint()));
   base::RunLoop pause;
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE, pause.QuitClosure(), base::Milliseconds(350));
   pause.Run();
-  EXPECT_TRUE(view->IsToolbarVisible());
-  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(bounds.CenterPoint()));
-  EXPECT_TRUE(view->IsToolbarVisible());
-  ASSERT_TRUE(base::test::RunUntil([&] { return !view->IsToolbarVisible(); }));
+  EXPECT_FALSE(view->IsToolbarVisible());
 }
 
 IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,

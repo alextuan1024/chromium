@@ -62,7 +62,6 @@
 #include "ui/gfx/native_ui_types.h"
 #include "ui/views/controls/button/button.h"
 #include "ui/views/controls/webview/unhandled_keyboard_event_handler.h"
-#include "ui/views/event_monitor.h"
 #include "ui/views/interaction/view_subregion_anchor.h"
 #include "ui/views/widget/widget_delegate.h"
 #include "ui/views/widget/widget_observer.h"
@@ -135,7 +134,6 @@ class WebView;
 class BrowserView : public BrowserWindow,
                     public TabStripModelObserver,
                     public ui::AcceleratorProvider,
-                    public ui::EventObserver,
                     public views::WidgetDelegate,
                     public views::WidgetObserver,
                     public content::WebContentsObserver,
@@ -849,7 +847,6 @@ class BrowserView : public BrowserWindow,
  private:
   friend class BrowserViewExclusiveAccessContext;
 
-  void OnEvent(const ui::Event& event) override;
   void UpdateAutoHiddenToolbar();
   void SetAutoHiddenToolbarRevealed(bool revealed);
   void RevealAutoHiddenToolbar();
@@ -858,7 +855,6 @@ class BrowserView : public BrowserWindow,
   bool auto_hidden_toolbar_overlay_ = false;
   std::optional<base::TimeTicks> auto_hidden_toolbar_dismissal_start_;
   base::RepeatingTimer auto_hidden_toolbar_timer_;
-  std::unique_ptr<views::EventMonitor> auto_hidden_toolbar_event_monitor_;
   // Do not friend BrowserViewLayout. Use the BrowserViewLayoutDelegate
   // interface to keep these two classes decoupled and testable.
   friend class BrowserViewLayoutDelegateImpl;
