@@ -1153,7 +1153,6 @@ BrowserView::BrowserView(BrowserWindowInterface* browser)
 }
 
 BrowserView::~BrowserView() {
-  auto_hidden_toolbar_event_monitor_.reset();
   auto_hidden_toolbar_timer_.Stop();
   // Remove the layout manager to avoid dangling. This needs to be earlier than
   // other cleanups that destroy views referenced in the layout manager.
@@ -3251,10 +3250,6 @@ bool BrowserView::IsAutoHideControlsEnabled() const {
 #endif
 }
 
-void BrowserView::OnEvent(const ui::Event& event) {
-  UpdateAutoHiddenToolbar();
-}
-
 void BrowserView::UpdateAutoHiddenToolbar() {
   if (!IsAutoHideControlsEnabled() || !GetWidget() ||
       suppress_layout_for_teardown_) {
@@ -3263,12 +3258,9 @@ void BrowserView::UpdateAutoHiddenToolbar() {
     return;
   }
   const gfx::Point cursor = display::Screen::Get()->GetCursorScreenPoint();
-  gfx::Rect trigger = GetBoundsInScreen();
-  trigger.set_height(4);
   const bool hovered = GetWidget()->IsActive() &&
-                       (trigger.Contains(cursor) ||
-                        (auto_hidden_toolbar_revealed_ &&
-                         top_container_->GetBoundsInScreen().Contains(cursor)));
+                       auto_hidden_toolbar_revealed_ &&
+                       top_container_->GetBoundsInScreen().Contains(cursor);
   const bool interacting =
       hovered ||
       (GetWidget()->IsActive() &&
@@ -4459,7 +4451,6 @@ views::View* BrowserView::CreateMacOverlayView() {
 #endif  // IS_MAC
 
 void BrowserView::OnWidgetDestroying(views::Widget* widget) {
-  auto_hidden_toolbar_event_monitor_.reset();
   auto_hidden_toolbar_timer_.Stop();
   CHECK(widget_observation_.IsObservingSource(widget),
         base::NotFatalUntil::M162);
@@ -5211,13 +5202,6 @@ void BrowserView::Layout(PassKey) {
   LayoutSuperclass<views::View>(this);
 
   if (IsAutoHideControlsEnabled()) {
-    if (!auto_hidden_toolbar_event_monitor_) {
-      auto_hidden_toolbar_event_monitor_ =
-          views::EventMonitor::CreateApplicationMonitor(
-              this, GetWidget()->GetNativeWindow(),
-              {ui::EventType::kMouseMoved, ui::EventType::kMouseEntered,
-               ui::EventType::kMouseExited, ui::EventType::kMouseDragged});
-    }
     if (top_container_->parent() == this) {
       top_container_->SetPaintToLayer();
       top_container_->layer()->SetFillsBoundsOpaquely(false);
@@ -5237,7 +5221,6 @@ void BrowserView::Layout(PassKey) {
                                        &BrowserView::UpdateAutoHiddenToolbar);
     }
   } else {
-    auto_hidden_toolbar_event_monitor_.reset();
     auto_hidden_toolbar_timer_.Stop();
     auto_hidden_toolbar_dismissal_start_.reset();
     if (auto_hidden_toolbar_overlay_ && top_container_->parent() == this) {

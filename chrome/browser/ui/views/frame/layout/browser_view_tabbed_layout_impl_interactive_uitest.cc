@@ -1160,7 +1160,7 @@ IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
 }
 
 IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
-                       TopEdgeHoverAndDelayedDismissal) {
+                       TopEdgeHoverDoesNotRevealToolbar) {
   ASSERT_TRUE(ui_test_utils::BringBrowserWindowToFront(browser()));
   auto* view = BrowserView::GetBrowserViewForBrowser(browser());
   auto* contents = browser()->tab_strip_model()->GetActiveWebContents();
@@ -1174,18 +1174,11 @@ IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
   ASSERT_FALSE(view->IsToolbarVisible());
   ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
       gfx::Point(bounds.CenterPoint().x(), bounds.y() + 2)));
-  ASSERT_TRUE(base::test::RunUntil([&] { return view->IsToolbarVisible(); }));
-  RunScheduledLayouts();
-  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(
-      view->toolbar()->GetBoundsInScreen().CenterPoint()));
   base::RunLoop pause;
   base::SingleThreadTaskRunner::GetCurrentDefault()->PostDelayedTask(
       FROM_HERE, pause.QuitClosure(), base::Milliseconds(350));
   pause.Run();
-  EXPECT_TRUE(view->IsToolbarVisible());
-  ASSERT_TRUE(ui_test_utils::SendMouseMoveSync(bounds.CenterPoint()));
-  EXPECT_TRUE(view->IsToolbarVisible());
-  ASSERT_TRUE(base::test::RunUntil([&] { return !view->IsToolbarVisible(); }));
+  EXPECT_FALSE(view->IsToolbarVisible());
 }
 
 IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
@@ -1216,7 +1209,7 @@ IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
 }
 
 IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
-                       RevealedToolbarOverlaysContentsAndSidebar) {
+                       RevealedToolbarReservesSpaceAboveContentsAndSidebar) {
   auto* view = BrowserView::GetBrowserViewForBrowser(browser());
   RunScheduledLayouts();
   const auto contents_bounds = view->contents_container()->GetBoundsInScreen();
@@ -1224,10 +1217,13 @@ IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
       view->vertical_tab_strip_region_view_for_testing()->GetBoundsInScreen();
   view->SetFocusToLocationBar(true);
   RunScheduledLayouts();
-  EXPECT_EQ(contents_bounds, view->contents_container()->GetBoundsInScreen());
-  EXPECT_EQ(
-      sidebar_bounds,
-      view->vertical_tab_strip_region_view_for_testing()->GetBoundsInScreen());
+  const int toolbar_bottom = view->top_container()->GetBoundsInScreen().bottom();
+  EXPECT_EQ(toolbar_bottom, view->contents_container()->GetBoundsInScreen().y());
+  EXPECT_EQ(toolbar_bottom,
+            view->vertical_tab_strip_region_view_for_testing()
+                ->GetBoundsInScreen().y());
+  EXPECT_GT(toolbar_bottom, contents_bounds.y());
+  EXPECT_GT(toolbar_bottom, sidebar_bounds.y());
   EXPECT_EQ(view->GetBoundsInScreen().x(),
             view->top_container()->GetBoundsInScreen().x());
   EXPECT_EQ(view->width(), view->top_container()->width());
