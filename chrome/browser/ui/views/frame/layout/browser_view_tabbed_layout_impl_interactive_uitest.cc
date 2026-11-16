@@ -1206,6 +1206,16 @@ IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
 }
 
 IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
+                       HiddenToolbarHasNoTopSeparator) {
+  auto* view = BrowserView::GetBrowserViewForBrowser(browser());
+  RunScheduledLayouts();
+  ASSERT_FALSE(view->IsToolbarVisible());
+  EXPECT_EQ(view->GetBoundsInScreen().y(),
+            browser()->tab_strip_model()->GetActiveWebContents()
+                ->GetContainerBounds().y());
+}
+
+IN_PROC_BROWSER_TEST_F(AutoHideBrowserControlsUiTest,
                        RevealedToolbarOverlaysContentsAndSidebar) {
   auto* view = BrowserView::GetBrowserViewForBrowser(browser());
   RunScheduledLayouts();
