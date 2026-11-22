@@ -842,6 +842,22 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
   const bool auto_hide_controls = delegate().IsAutoHideControlsEnabled();
   const HorizontalLayout& horizontal_layout = layout_data_->horizontal_layout;
 
+  if (auto_hide_controls &&
+      IsParentedTo(views().top_container, views().browser_view)) {
+    auto& top_container_layout = layout.AddChild(
+        views().top_container, gfx::Rect(), delegate().IsToolbarVisible());
+    // Keep native caption controls in the toolbar row.
+    const auto toolbar_params =
+        browser_params.InLocalCoordinates(browser_params.visual_client_area);
+    const auto bounds = CalculateTopContainerLayout(
+        top_container_layout, toolbar_params, /*needs_exclusion=*/true);
+    top_container_layout.bounds =
+        GetTopContainerBoundsInParent(bounds, browser_params);
+    if (delegate().IsToolbarVisible()) {
+      params.SetTop(top_container_layout.bounds.bottom());
+    }
+  }
+
   const int target_organizer_width =
       layout_data_->tab_strip_type == TabStripType::kHorizontal
           ? organizer_panel::kOrganizerPanelDefaultWidth
@@ -1193,18 +1209,6 @@ BrowserViewTabbedLayoutImpl::CalculateProposedLayout(
     params.SetTop(top_container_layout.bounds.bottom());
   }
 
-  if (auto_hide_controls &&
-      IsParentedTo(views().top_container, views().browser_view)) {
-    auto& top_container_layout = layout.AddChild(
-        views().top_container, gfx::Rect(), delegate().IsToolbarVisible());
-    // Reserve caption space only inside the overlay, never in the page/sidebar.
-    const auto overlay_params =
-        browser_params.InLocalCoordinates(browser_params.visual_client_area);
-    const auto bounds = CalculateTopContainerLayout(
-        top_container_layout, overlay_params, /*needs_exclusion=*/true);
-    top_container_layout.bounds =
-        GetTopContainerBoundsInParent(bounds, browser_params);
-  }
 
   // Lay out infobar container.
   const bool infobar_visible = delegate().IsInfobarVisible();
