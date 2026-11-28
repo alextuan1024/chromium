@@ -114,6 +114,7 @@ class SendTabToSelfIphController;
 }  // namespace send_tab_to_self
 class TabMenuModelDelegate;
 class TabStripModel;
+class TabOverviewController;
 class TabStripServiceFeature;
 class TabsFromOtherDevicesSidePanelCoordinator;
 class ToastService;
@@ -454,6 +455,7 @@ class BrowserWindowFeatures {
   std::unique_ptr<TabMenuModelDelegate> tab_menu_model_delegate_;
 
   // This is an experimental API that interacts with the TabStripModel.
+  std::unique_ptr<TabOverviewController> tab_overview_controller_;
   std::unique_ptr<TabStripServiceFeature> tab_strip_service_feature_;
 
   // Controller for managing TabStrip UI decoupled TabStrip platform.

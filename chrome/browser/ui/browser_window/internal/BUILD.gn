@@ -149,6 +149,7 @@ source_set("internal") {
       "//chrome/browser/ui/views/new_tab_footer",
       "//chrome/browser/ui/views/send_tab_to_self",
       "//chrome/browser/ui/views/sharing",
+      "//chrome/browser/ui/views/tabs/overview",
       "//chrome/browser/ui/views/side_panel",
       "//chrome/browser/ui/views/tabs:tab_strip",
       "//chrome/browser/ui/views/tabs/groups",

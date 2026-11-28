@@ -253,6 +253,10 @@ BASE_DECLARE_FEATURE(kNewTabButtonContextMenu);
 
 BASE_DECLARE_FEATURE(kTabHoverCardImages);
 
+// Pinching in on a page that cannot zoom out further opens a grid of tab
+// thumbnails over the page area.
+BASE_DECLARE_FEATURE(kTabOverviewPinch);
+
 // These parameters control how long the hover card system waits before
 // requesting a preview image from a tab where no preview image is available.
 // Values are in ms.

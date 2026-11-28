@@ -4564,6 +4564,8 @@ source_set("browser") {
       "//chrome/browser/ui/views/tabs/hovercard",
       "//chrome/browser/ui/views/tabs/hovercard:impl",
       "//chrome/browser/ui/views/tabs/organizer",
+      "//chrome/browser/ui/views/tabs/overview",
+      "//chrome/browser/ui/views/tabs/overview:impl",
       "//chrome/browser/ui/views/tabs/shared",
       "//chrome/browser/ui/views/tabs/shared:impl",
       "//chrome/browser/ui/views/tabs/tab",

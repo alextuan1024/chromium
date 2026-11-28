@@ -10,12 +10,14 @@
 #include <optional>
 #include <utility>
 
+#include "base/feature_list.h"
 #include "base/functional/bind.h"
 #include "base/metrics/histogram_macros.h"
 #include "base/no_destructor.h"
 #include "chrome/browser/ui/tabs/tab_style.h"
 #include "chrome/browser/ui/thumbnails/thumbnail_scheduler.h"
 #include "chrome/browser/ui/thumbnails/thumbnail_scheduler_impl.h"
+#include "chrome/browser/ui/ui_features.h"
 #include "components/tabs/public/tab_interface.h"
 #include "components/viz/common/frame_sinks/copy_output_result.h"
 #include "content/public/browser/browser_thread.h"
@@ -45,6 +47,10 @@ gfx::Size GetMinimumThumbnailSize() {
   gfx::Size min_target_size = TabStyle::Get()->GetPreviewImageSize();
   min_target_size.SetToMax(
       {kMinThumbnailDimensionForTablet, kMinThumbnailDimensionForTablet});
+  if (base::FeatureList::IsEnabled(features::kTabOverviewPinch)) {
+    // Tab overview tiles are larger than hover card previews.
+    min_target_size.SetToMax({360, 225});
+  }
 
   return min_target_size;
 }

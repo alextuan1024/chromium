@@ -150,6 +150,7 @@
 #include "chrome/browser/ui/views/profiles/profile_customization_bubble_sync_controller.h"
 #include "chrome/browser/ui/views/profiles/profile_menu_coordinator.h"
 #include "chrome/browser/ui/views/sharing/sharing_window_controller.h"
+#include "chrome/browser/ui/views/tabs/overview/tab_overview_controller.h"
 #include "chrome/browser/ui/views/side_panel/bookmarks/bookmarks_side_panel_coordinator.h"
 #include "chrome/browser/ui/views/side_panel/comments/comments_side_panel_coordinator.h"
 #include "chrome/browser/ui/views/side_panel/history/history_side_panel_coordinator.h"
@@ -1125,6 +1126,13 @@ void BrowserWindowFeatures::InitPostWindowConstruction(
                   browser_view->multi_contents_view());
     }
 
+    if (browser_view &&
+        base::FeatureList::IsEnabled(features::kTabOverviewPinch)) {
+      tab_overview_controller_ =
+          GetUserDataFactory().CreateInstance<TabOverviewController>(
+              *browser, browser, browser_view);
+    }
+
     if (base::FeatureList::IsEnabled(
             feature_engagement::kIPHSideBySidePinnableFeature) ||
         base::FeatureList::IsEnabled(
@@ -1198,6 +1206,7 @@ void BrowserWindowFeatures::TearDownPreBrowserWindowDestruction() {
   vertical_tab_iph_controller_.reset();
   ttc_entrypoint_controller_.reset();
   split_view_iph_controller_.reset();
+  tab_overview_controller_.reset();
   split_tab_highlight_controller_.reset();
   sharing_window_controller_.reset();
   sharing_hub_window_controller_.reset();

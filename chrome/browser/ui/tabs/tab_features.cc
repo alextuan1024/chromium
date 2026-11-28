@@ -882,7 +882,8 @@ void TabFeatures::Init(TabInterface& tab, Profile* profile) {
   intent_picker_tab_helper_ =
       std::make_unique<IntentPickerTabHelper>(tab, tab.GetContents());
 
-  if (base::FeatureList::IsEnabled(features::kTabHoverCardImages)) {
+  if (base::FeatureList::IsEnabled(features::kTabHoverCardImages) ||
+      base::FeatureList::IsEnabled(features::kTabOverviewPinch)) {
     thumbnail_tab_helper_ =
         GetUserDataFactory().CreateInstance<ThumbnailTabHelper>(
             tab, tab, tab.GetContents());
