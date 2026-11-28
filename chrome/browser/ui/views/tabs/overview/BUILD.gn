@@ -1,0 +1,92 @@
+# Copyright 2026 The Chromium Authors
+# Use of this source code is governed by a BSD-style license that can be
+# found in the LICENSE file.
+
+import("//build/config/ui.gni")
+
+assert(toolkit_views)
+
+source_set("overview") {
+  public = [
+    "tab_overview_controller.h",
+    "tab_overview_gesture_detector.h",
+    "tab_overview_view.h",
+  ]
+
+  sources = [ "tab_overview_gesture_detector.cc" ]
+
+  public_deps = [
+    "//base",
+    "//chrome/browser/ui/tabs:tab_strip_model_observer",
+    "//components/tabs:public",
+    "//content/public/browser",
+    "//ui/base/metadata",
+    "//ui/base/unowned_user_data",
+    "//ui/gfx/animation",
+    "//ui/gfx/geometry",
+    "//ui/views",
+  ]
+}
+
+source_set("impl") {
+  sources = [
+    "tab_overview_controller.cc",
+    "tab_overview_view.cc",
+  ]
+
+  deps = [
+    ":overview",
+    "//base",
+    "//chrome/browser/favicon",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/tabs:tab_enums",
+    "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/browser/ui/thumbnails",
+    "//chrome/browser/ui/views/frame",
+    "//components/favicon/content",
+    "//components/vector_icons",
+    "//components/viz/common",
+    "//skia",
+    "//third_party/blink/public/common:headers",
+    "//ui/accessibility:ax_enums_mojo",
+    "//ui/base",
+    "//ui/color",
+    "//ui/compositor",
+    "//ui/events",
+    "//ui/gfx",
+    "//ui/gfx/geometry",
+    "//ui/views",
+  ]
+}
+
+source_set("unit_tests") {
+  testonly = true
+  sources = [ "tab_overview_gesture_detector_unittest.cc" ]
+  deps = [
+    ":overview",
+    "//base",
+    "//testing/gtest",
+  ]
+}
+
+source_set("interactive_ui_tests") {
+  testonly = true
+  defines = [ "HAS_OUT_OF_PROC_TEST_RUNNER" ]
+  sources = [ "tab_overview_controller_interactive_uitest.cc" ]
+  deps = [
+    ":overview",
+    "//base",
+    "//base/test:test_support",
+    "//chrome/browser/ui:browser_tabstrip",
+    "//chrome/browser/ui:ui_features",
+    "//chrome/browser/ui/browser_window",
+    "//chrome/browser/ui/tabs:tab_strip",
+    "//chrome/test:test_support",
+    "//components/tabs:public",
+    "//content/test:test_support",
+    "//ui/events:test_support",
+    "//ui/views",
+    "//ui/views:test_support",
+    "//url",
+  ]
+}
